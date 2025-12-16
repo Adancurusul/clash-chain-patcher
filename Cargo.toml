@@ -1,0 +1,30 @@
+[package]
+name = "clash-chain-patcher"
+version = "0.1.0"
+edition = "2021"
+authors = ["Clash Chain Patcher"]
+description = "A GUI tool to add SOCKS5 proxy chains to Clash configurations"
+
+[dependencies]
+# Makepad GUI framework
+makepad-widgets = "1.0"
+
+# YAML parsing
+serde = { version = "1.0", features = ["derive"] }
+serde_yaml = "0.9"
+
+# File dialogs
+rfd = "0.14"
+
+# Regex for name cleaning
+regex = "1.10"
+
+[target.'cfg(windows)'.build-dependencies]
+# winresource is a maintained fork of winres that works with Rust 1.61+
+# Reference: https://github.com/BenjaminRi/winresource
+winresource = "0.1"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
