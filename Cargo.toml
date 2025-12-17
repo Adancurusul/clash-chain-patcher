@@ -1,6 +1,6 @@
 [package]
 name = "clash-chain-patcher"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 authors = ["Clash Chain Patcher"]
 description = "A GUI tool to add SOCKS5 proxy chains to Clash configurations"
@@ -28,3 +28,69 @@ winresource = "0.1"
 opt-level = 3
 lto = true
 codegen-units = 1
+
+# ============================================================================
+# cargo-packager configuration
+# Reference: https://github.com/crabnebula-dev/cargo-packager
+# ============================================================================
+
+[package.metadata.packager]
+# Basic info
+product-name = "Clash Chain Patcher"
+identifier = "com.clashchain.patcher"
+version = "0.1.1"
+description = "A GUI tool to add SOCKS5 proxy chains to Clash configurations"
+homepage = "https://github.com/clash-chain-patcher"
+license-file = "LICENSE"
+
+# Binary configuration
+out-dir = "dist"
+
+# Icons for each platform
+icons = [
+    "logo/logo_32.png",
+    "logo/logo_48.png",
+    "logo/clash-chain-patcher.png",
+    "logo/app.ico",
+    "logo/AppIcon.icns"
+]
+
+# Resources to include in the bundle
+# Each Makepad resource directory is specified separately for reliability
+resources = [
+    { src = "./dist/resources/makepad_widgets", target = "makepad_widgets" },
+    { src = "./dist/resources/makepad_fonts_chinese_bold", target = "makepad_fonts_chinese_bold" },
+    { src = "./dist/resources/makepad_fonts_chinese_bold_2", target = "makepad_fonts_chinese_bold_2" },
+    { src = "./dist/resources/makepad_fonts_chinese_regular", target = "makepad_fonts_chinese_regular" },
+    { src = "./dist/resources/makepad_fonts_chinese_regular_2", target = "makepad_fonts_chinese_regular_2" },
+    { src = "./dist/resources/makepad_fonts_emoji", target = "makepad_fonts_emoji" },
+]
+
+# Custom commands for Makepad resource handling
+# Reference: https://book.makepad.rs/zh/guide/appendix/packaging-guide
+#
+# IMPORTANT: We cannot use robius-packaging-commands because:
+# 1. It relies on .path files to discover resources
+# 2. Chinese font crates (makepad-fonts-chinese-*) don't generate .path files
+# 3. robius's before-each-package overwrites dist/resources/, losing Chinese fonts
+#
+# Our custom helper uses cargo-metadata to discover ALL Makepad crates including Chinese fonts
+before-packaging-command = "cargo run --manifest-path packaging/before-packaging-command/Cargo.toml -- before-packaging"
+before-each-package-command = "cargo run --manifest-path packaging/before-packaging-command/Cargo.toml -- before-each-package"
+
+# macOS specific
+[package.metadata.packager.macos]
+minimum-system-version = "10.15"
+frameworks = []
+
+# Windows specific
+[package.metadata.packager.windows]
+allow-downgrades = false
+
+# Linux specific
+[package.metadata.packager.deb]
+section = "utils"
+priority = "optional"
+
+[package.metadata.packager.appimage]
+# AppImage specific settings

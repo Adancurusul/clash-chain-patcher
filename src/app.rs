@@ -15,6 +15,7 @@ live_design! {
             main_window = <Window> {
                 show_bg: true,
                 window: {
+                    title: "Clash Chain Patcher",
                     inner_size: vec2(440, 620)
                 }
                 draw_bg: {
@@ -44,7 +45,7 @@ live_design! {
                         logo_image = <Image> {
                             width: 32,
                             height: 32,
-                            source: dep("crate://self/logo/logo_32.png")
+                            fit: Stretch
                         }
 
                         <Label> {
@@ -354,12 +355,20 @@ impl MatchEvent for App {
 /// Version from Cargo.toml, set at compile time
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// Logo image data embedded at compile time
+const LOGO_PNG_DATA: &[u8] = include_bytes!("../logo/logo_32.png");
+
 impl AppMain for App {
     fn handle_event(&mut self, cx: &mut Cx, event: &Event) {
-        // Set version label on startup
+        // Set version label and load logo on startup
         if let Event::Startup = event {
             let version_text = format!("v{}", VERSION);
             self.ui.label(id!(version_label)).set_text(cx, &version_text);
+
+            // Load embedded logo image
+            if let Err(e) = self.ui.image(id!(logo_image)).load_png_from_data(cx, LOGO_PNG_DATA) {
+                eprintln!("Failed to load logo: {:?}", e);
+            }
         }
         self.match_event(cx, event);
         self.ui.handle_event(cx, event, &mut Scope::empty());

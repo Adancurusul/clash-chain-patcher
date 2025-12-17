@@ -32,10 +32,30 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
-      - name: Build
-        run: cargo build --release
+      - name: Install cargo-packager
+        run: cargo install cargo-packager --version 0.10.1
 
-      - name: Upload artifact
+      # cargo-packager will automatically run before-packaging-command and before-each-package-command
+      # as configured in Cargo.toml [package.metadata.packager]
+      - name: Package with cargo-packager
+        run: cargo packager --release --formats nsis
+        continue-on-error: true
+
+      - name: Fallback - Upload plain exe if packager fails
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: clash-chain-patcher-windows-exe
+          path: target/release/clash-chain-patcher.exe
+
+      - name: Upload NSIS installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: clash-chain-patcher-windows-nsis
+          path: dist/*.exe
+          if-no-files-found: ignore
+
+      - name: Upload plain exe as backup
         uses: actions/upload-artifact@v4
         with:
           name: clash-chain-patcher-windows
@@ -63,43 +83,43 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
+      - name: Install cargo-packager
+        run: cargo install cargo-packager --version 0.10.1
 
-      - name: Install Pillow
-        run: pip install pillow
-
-      - name: Generate icons
-        run: python scripts/generate_icons.py
-
-      - name: Build and Bundle
-        run: |
-          chmod +x scripts/bundle_macos.sh
-          ./scripts/bundle_macos.sh
+      # cargo-packager will automatically run before-packaging-command and before-each-package-command
+      # as configured in Cargo.toml [package.metadata.packager]
+      - name: Package macOS app bundle
+        run: cargo packager --release --formats app
+        continue-on-error: true
 
       - name: Create DMG
         run: |
-          brew install create-dmg
-          # create-dmg may return non-zero exit code even on success
-          # when background image is not provided
-          create-dmg \
-            --volname "Clash Chain Patcher" \
-            --volicon "logo/AppIcon.icns" \
-            --window-pos 200 120 \
-            --window-size 600 400 \
-            --icon-size 100 \
-            --icon "Clash Chain Patcher.app" 175 190 \
-            --app-drop-link 425 190 \
-            --no-internet-enable \
-            "Clash-Chain-Patcher-macos.dmg" \
-            "target/bundle/" || true
+          # cargo-packager outputs to dist/ directly, not dist/macos/
+          if [ -d "dist/Clash Chain Patcher.app" ]; then
+            brew install create-dmg
+            # Create a temp directory for DMG creation
+            mkdir -p dist/dmg-source
+            cp -r "dist/Clash Chain Patcher.app" dist/dmg-source/
+            create-dmg \
+              --volname "Clash Chain Patcher" \
+              --volicon "logo/AppIcon.icns" \
+              --window-pos 200 120 \
+              --window-size 600 400 \
+              --icon-size 100 \
+              --icon "Clash Chain Patcher.app" 175 190 \
+              --app-drop-link 425 190 \
+              --no-internet-enable \
+              "Clash-Chain-Patcher-macos.dmg" \
+              "dist/dmg-source/" || true
+          fi
+        continue-on-error: true
 
-      - name: Zip app bundle (fallback)
+      - name: Zip app bundle
         run: |
-          cd target/bundle
-          zip -r ../../Clash-Chain-Patcher-macos.zip "Clash Chain Patcher.app"
+          if [ -d "dist/Clash Chain Patcher.app" ]; then
+            cd dist
+            zip -r ../Clash-Chain-Patcher-macos.zip "Clash Chain Patcher.app"
+          fi
 
       - name: Upload DMG
         uses: actions/upload-artifact@v4
@@ -113,6 +133,7 @@ jobs:
         with:
           name: clash-chain-patcher-macos-zip
           path: Clash-Chain-Patcher-macos.zip
+          if-no-files-found: ignore
 
   build-linux:
     runs-on: ubuntu-latest
@@ -160,10 +181,23 @@ jobs:
             libgl1-mesa-dev \
             libgtk-3-dev
 
-      - name: Build
-        run: cargo build --release
+      - name: Install cargo-packager
+        run: cargo install cargo-packager --version 0.10.1
 
-      - name: Upload artifact
+      # cargo-packager will automatically run before-packaging-command and before-each-package-command
+      # as configured in Cargo.toml [package.metadata.packager]
+      - name: Package deb
+        run: cargo packager --release --formats deb
+        continue-on-error: true
+
+      - name: Upload deb
+        uses: actions/upload-artifact@v4
+        with:
+          name: clash-chain-patcher-linux-deb
+          path: dist/*.deb
+          if-no-files-found: ignore
+
+      - name: Upload plain binary
         uses: actions/upload-artifact@v4
         with:
           name: clash-chain-patcher-linux
@@ -181,17 +215,22 @@ jobs:
         with:
           path: artifacts
 
+      - name: List artifacts
+        run: find artifacts -type f
+
       - name: Prepare release files
         run: |
           mkdir release
           # Windows
-          cp artifacts/clash-chain-patcher-windows/clash-chain-patcher.exe release/clash-chain-patcher-windows.exe
+          cp artifacts/clash-chain-patcher-windows/clash-chain-patcher.exe release/clash-chain-patcher-windows.exe || true
+          cp artifacts/clash-chain-patcher-windows-nsis/*.exe release/ || true
           # macOS
           cp artifacts/clash-chain-patcher-macos-zip/Clash-Chain-Patcher-macos.zip release/ || true
           cp artifacts/clash-chain-patcher-macos-dmg/Clash-Chain-Patcher-macos.dmg release/ || true
           # Linux
-          cp artifacts/clash-chain-patcher-linux/clash-chain-patcher release/clash-chain-patcher-linux
-          chmod +x release/clash-chain-patcher-linux
+          cp artifacts/clash-chain-patcher-linux/clash-chain-patcher release/clash-chain-patcher-linux || true
+          cp artifacts/clash-chain-patcher-linux-deb/*.deb release/ || true
+          chmod +x release/clash-chain-patcher-linux || true
 
       - name: Create Release
         uses: softprops/action-gh-release@v2

@@ -2,6 +2,12 @@
 /target/
 Cargo.lock
 
+# Packaging helper build artifacts
+packaging/*/target/
+
+# Generated dist folder (created during packaging)
+/dist/
+
 # IDE
 .idea/
 .vscode/

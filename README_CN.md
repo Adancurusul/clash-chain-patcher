@@ -37,6 +37,27 @@
 | macOS | `Clash-Chain-Patcher-macos.zip` | 包含 .app 包 |
 | Linux | `clash-chain-patcher-linux` | 需要 `chmod +x` 添加执行权限 |
 
+### macOS: 首次启动
+
+由于应用未使用 Apple 开发者证书签名，macOS Gatekeeper 会阻止打开（显示"已损坏"）。
+
+**解决方法：在终端运行**
+```bash
+# 如果应用在 Downloads 文件夹
+xattr -cr ~/Downloads/Clash\ Chain\ Patcher.app
+
+# 如果已移动到 Applications
+xattr -cr /Applications/Clash\ Chain\ Patcher.app
+```
+
+然后即可正常双击打开。
+
+### Linux: 首次启动
+```bash
+chmod +x clash-chain-patcher-linux
+./clash-chain-patcher-linux
+```
+
 ## 使用方法
 
 ### 1. 选择配置文件

@@ -37,6 +37,27 @@ Download the latest release from [Releases](../../releases):
 | macOS | `Clash-Chain-Patcher-macos.zip` | Contains .app bundle |
 | Linux | `clash-chain-patcher-linux` | Make executable with `chmod +x` |
 
+### macOS: First Launch
+
+Since the app is not signed with an Apple Developer certificate, macOS Gatekeeper will block it (shows "damaged").
+
+**Solution: Run in Terminal**
+```bash
+# If app is in Downloads folder
+xattr -cr ~/Downloads/Clash\ Chain\ Patcher.app
+
+# If moved to Applications
+xattr -cr /Applications/Clash\ Chain\ Patcher.app
+```
+
+Then you can double-click to open normally.
+
+### Linux: First Launch
+```bash
+chmod +x clash-chain-patcher-linux
+./clash-chain-patcher-linux
+```
+
 ## Usage
 
 ### 1. Select Config File

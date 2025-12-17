@@ -9,6 +9,10 @@
 //!
 //! Built with Makepad for a native GUI experience.
 
+// Prevents console window from appearing on Windows
+// Reference: https://rust-lang.github.io/rfcs/1665-windows-subsystem.html
+#![windows_subsystem = "windows"]
+
 mod patcher;
 mod app;
 

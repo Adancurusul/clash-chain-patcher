@@ -1,0 +1,8 @@
+[package]
+name = "before-packaging-command"
+version = "0.1.0"
+edition = "2021"
+description = "Build helper for clash-chain-patcher packaging"
+
+[dependencies]
+cargo_metadata = "0.18"

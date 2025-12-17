@@ -88,22 +88,25 @@ def generate_ico_windows(png_path: Path, output_path: Path):
     if img.mode != 'RGBA':
         img = img.convert('RGBA')
 
-    # Windows icon sizes
+    # Windows icon sizes (256 is max for ICO format)
     sizes = [16, 24, 32, 48, 64, 128, 256]
 
     icons = []
     for size in sizes:
         resized = img.resize((size, size), Image.Resampling.LANCZOS)
         icons.append(resized)
+        print(f"  Prepared {size}x{size}")
 
-    # Save as .ico with multiple sizes
-    icons[0].save(
+    # Save as .ico with multiple sizes embedded
+    img.save(
         output_path,
         format='ICO',
-        sizes=[(s, s) for s in sizes],
-        append_images=icons[1:]
+        sizes=[(icon.width, icon.height) for icon in icons]
     )
-    print(f"  Created {output_path}")
+
+    # Verify file size
+    file_size = output_path.stat().st_size
+    print(f"  Created {output_path} ({file_size / 1024:.1f} KB)")
     return True
 
 def main():
