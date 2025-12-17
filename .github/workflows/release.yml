@@ -41,13 +41,6 @@ jobs:
         run: cargo packager --release --formats nsis
         continue-on-error: true
 
-      - name: Fallback - Upload plain exe if packager fails
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: clash-chain-patcher-windows-exe
-          path: target/release/clash-chain-patcher.exe
-
       - name: Upload NSIS installer
         uses: actions/upload-artifact@v4
         with:
@@ -55,11 +48,22 @@ jobs:
           path: dist/*.exe
           if-no-files-found: ignore
 
-      - name: Upload plain exe as backup
+      # Create portable version with resources bundled
+      - name: Create portable zip
+        run: |
+          mkdir -p portable
+          cp target/release/clash-chain-patcher.exe portable/
+          if (Test-Path "dist/resources") {
+            Copy-Item -Recurse dist/resources/* portable/
+          }
+          Compress-Archive -Path portable/* -DestinationPath clash-chain-patcher-windows-portable.zip
+        shell: pwsh
+
+      - name: Upload portable zip
         uses: actions/upload-artifact@v4
         with:
-          name: clash-chain-patcher-windows
-          path: target/release/clash-chain-patcher.exe
+          name: clash-chain-patcher-windows-portable
+          path: clash-chain-patcher-windows-portable.zip
 
   build-macos:
     runs-on: macos-latest
@@ -221,9 +225,9 @@ jobs:
       - name: Prepare release files
         run: |
           mkdir release
-          # Windows
-          cp artifacts/clash-chain-patcher-windows/clash-chain-patcher.exe release/clash-chain-patcher-windows.exe || true
+          # Windows - NSIS installer and portable zip (NOT standalone exe, it won't work without resources)
           cp artifacts/clash-chain-patcher-windows-nsis/*.exe release/ || true
+          cp artifacts/clash-chain-patcher-windows-portable/clash-chain-patcher-windows-portable.zip release/ || true
           # macOS
           cp artifacts/clash-chain-patcher-macos-zip/Clash-Chain-Patcher-macos.zip release/ || true
           cp artifacts/clash-chain-patcher-macos-dmg/Clash-Chain-Patcher-macos.dmg release/ || true

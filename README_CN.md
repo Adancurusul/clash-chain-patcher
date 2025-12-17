@@ -18,6 +18,12 @@
 
 ---
 
+## 界面截图
+
+<p align="center">
+  <img src="img/main.png" alt="主界面" width="400">
+</p>
+
 ## 功能特性
 
 - **添加代理链** - 在现有 Clash 代理前添加 SOCKS5 代理
@@ -32,7 +38,8 @@
 
 | 平台 | 文件 | 说明 |
 |------|------|------|
-| Windows | `clash-chain-patcher-windows.exe` | 单文件可执行 |
+| Windows | `*-setup.exe` | NSIS 安装包（推荐） |
+| Windows | `*-portable.zip` | 便携版（解压即用） |
 | macOS | `Clash-Chain-Patcher-macos.dmg` | 拖拽到应用程序 |
 | macOS | `Clash-Chain-Patcher-macos.zip` | 包含 .app 包 |
 | Linux | `clash-chain-patcher-linux` | 需要 `chmod +x` 添加执行权限 |
@@ -162,6 +169,16 @@ clash-chain-patcher-rust/
 - **GUI**: [Makepad](https://github.com/makepad/makepad) - Rust UI 框架
 - **YAML**: serde_yaml
 - **文件对话框**: rfd
+
+## 已知问题
+
+### Windows: "Makepad" 标题栏
+
+在 Windows 上，由于 Makepad 框架的 bug，原生窗口标题栏会显示 "Makepad" 而不是应用名称。这只是外观问题，不影响功能使用。
+
+<p align="center">
+  <img src="img/windows-bug.png" alt="Windows 标题栏 Bug" width="300">
+</p>
 
 ## 免责声明
 

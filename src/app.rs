@@ -18,6 +18,8 @@ live_design! {
                     title: "Clash Chain Patcher",
                     inner_size: vec2(440, 620)
                 }
+                // Hide Makepad's built-in caption bar on all platforms
+                caption_bar = { visible: false }
                 draw_bg: {
                     color: #1a1a1a
                 }

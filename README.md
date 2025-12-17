@@ -18,6 +18,12 @@
 
 ---
 
+## Screenshot
+
+<p align="center">
+  <img src="img/main.png" alt="Main Interface" width="400">
+</p>
+
 ## Features
 
 - **Add proxy chains** - Prepend a SOCKS5 proxy to existing Clash proxies
@@ -32,7 +38,8 @@ Download the latest release from [Releases](../../releases):
 
 | Platform | File | Note |
 |----------|------|------|
-| Windows | `clash-chain-patcher-windows.exe` | Single executable |
+| Windows | `*-setup.exe` | NSIS Installer (Recommended) |
+| Windows | `*-portable.zip` | Portable version (unzip and run) |
 | macOS | `Clash-Chain-Patcher-macos.dmg` | Drag to Applications |
 | macOS | `Clash-Chain-Patcher-macos.zip` | Contains .app bundle |
 | Linux | `clash-chain-patcher-linux` | Make executable with `chmod +x` |
@@ -162,6 +169,16 @@ clash-chain-patcher-rust/
 - **GUI**: [Makepad](https://github.com/makepad/makepad) - Rust UI framework
 - **YAML**: serde_yaml
 - **File dialogs**: rfd
+
+## Known Issues
+
+### Windows: "Makepad" Title Bar
+
+On Windows, there is a known Makepad framework bug where the native window title bar displays "Makepad" instead of the application name. This is a cosmetic issue only and does not affect functionality.
+
+<p align="center">
+  <img src="img/windows-bug.png" alt="Windows Title Bar Bug" width="300">
+</p>
 
 ## Disclaimer
 
