@@ -170,16 +170,6 @@ clash-chain-patcher-rust/
 - **YAML**: serde_yaml
 - **文件对话框**: rfd
 
-## 已知问题
-
-### Windows: "Makepad" 标题栏
-
-在 Windows 上，由于 Makepad 框架的 bug，原生窗口标题栏会显示 "Makepad" 而不是应用名称。这只是外观问题，不影响功能使用。
-
-<p align="center">
-  <img src="img/windows-bug.png" alt="Windows 标题栏 Bug" width="300">
-</p>
-
 ## 免责声明
 
 本软件仅供**学习交流和技术研究**使用。

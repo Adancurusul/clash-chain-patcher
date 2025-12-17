@@ -170,16 +170,6 @@ clash-chain-patcher-rust/
 - **YAML**: serde_yaml
 - **File dialogs**: rfd
 
-## Known Issues
-
-### Windows: "Makepad" Title Bar
-
-On Windows, there is a known Makepad framework bug where the native window title bar displays "Makepad" instead of the application name. This is a cosmetic issue only and does not affect functionality.
-
-<p align="center">
-  <img src="img/windows-bug.png" alt="Windows Title Bar Bug" width="300">
-</p>
-
 ## Disclaimer
 
 This software is provided for **educational and research purposes only**.

@@ -1,6 +1,6 @@
 [package]
 name = "clash-chain-patcher"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 authors = ["Clash Chain Patcher"]
 description = "A GUI tool to add SOCKS5 proxy chains to Clash configurations"
@@ -38,7 +38,7 @@ codegen-units = 1
 # Basic info
 product-name = "Clash Chain Patcher"
 identifier = "com.clashchain.patcher"
-version = "0.1.1"
+version = "0.1.2"
 description = "A GUI tool to add SOCKS5 proxy chains to Clash configurations"
 homepage = "https://github.com/clash-chain-patcher"
 license-file = "LICENSE"
