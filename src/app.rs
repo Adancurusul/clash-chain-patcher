@@ -3,7 +3,7 @@
 //! Dark theme with high contrast text
 
 use makepad_widgets::*;
-use crate::patcher::{self, PatchOptions, Socks5Proxy};
+use clash_chain_patcher::patcher::{self, PatchOptions, Socks5Proxy};
 
 live_design! {
     use link::theme::*;

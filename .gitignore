@@ -25,3 +25,6 @@ packaging/*/target/
 __pycache__/
 *.pyc
 .venv/
+
+# Documentation
+/doc/
