@@ -116,6 +116,23 @@ impl ConfigBridge {
     pub(crate) fn get_manager_arc(&self) -> Arc<RwLock<ConfigManager>> {
         Arc::clone(&self.manager)
     }
+
+    /// Add a recently used file
+    pub fn add_recent_file(&self, path: String) -> BridgeResult<()> {
+        self.runtime.block_on(async {
+            let mut manager = self.manager.write().await;
+            manager.add_recent_file(path)
+                .map_err(|e| BridgeError::Config(e.to_string()))
+        })
+    }
+
+    /// Get the list of recently used files
+    pub fn get_recent_files(&self) -> Vec<String> {
+        self.runtime.block_on(async {
+            let manager = self.manager.read().await;
+            manager.get_recent_files().to_vec()
+        })
+    }
 }
 
 impl Default for ConfigBridge {

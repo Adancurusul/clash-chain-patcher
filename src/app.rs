@@ -700,6 +700,10 @@ pub struct AppState {
     /// Auto check task handle
     #[allow(dead_code)]
     auto_check_handle: Option<tokio::task::JoinHandle<()>>,
+    /// File watcher event channel receiver
+    watcher_rx: Option<tokio::sync::mpsc::UnboundedReceiver<clash_chain_patcher::watcher::WatcherEvent>>,
+    /// File watcher bridge instance
+    watcher_bridge: Option<clash_chain_patcher::bridge::WatcherBridge>,
 }
 
 impl Default for AppState {
@@ -719,6 +723,8 @@ impl Default for AppState {
             auto_check_interval: 5, // Default 5 minutes
             health_check_rx: None,
             auto_check_handle: None,
+            watcher_rx: None,
+            watcher_bridge: None,
         }
     }
 }
@@ -862,6 +868,19 @@ impl AppMain for App {
             self.update_proxy_health_from_background(cx, proxy_id, result);
         }
 
+        // Check for file watcher events
+        let mut watcher_events = Vec::new();
+        if let Some(rx) = &mut self.state.watcher_rx {
+            while let Ok(event) = rx.try_recv() {
+                watcher_events.push(event);
+            }
+        }
+
+        // Process file watcher events
+        for event in watcher_events {
+            self.handle_watcher_event(cx, event);
+        }
+
         self.match_event(cx, event);
         self.ui.handle_event(cx, event, &mut Scope::empty());
     }
@@ -892,7 +911,7 @@ impl App {
                 self.state.config_filename = Some(filename.clone());
 
                 // Add to recent files (if not already there)
-                self.add_to_recent_files(path_str.clone());
+                self.add_to_recent_files(cx, path_str.clone());
 
                 // Set Clash config path for proxy pool merging
                 if let Some(state) = &mut self.state.proxy_state {
@@ -944,17 +963,58 @@ impl App {
 
         eprintln!("DEBUG: Setting button text to: {}", button_text);
         self.ui.button(id!(watch_toggle_btn)).set_text(cx, button_text);
-        // Note: Makepad doesn't easily support dynamic color changes without live_design
-        // For simplicity, we keep the text color constant
 
         self.clear_logs(cx);
         if self.state.watching {
-            self.add_log(cx, "✓ File watching enabled");
-            self.add_log(cx, "  Will monitor Clash config for changes");
-            // TODO: Start file watcher using WatcherBridge
+            // Start file watcher - extract config_path first to avoid borrow conflict
+            let config_path_opt = self.state.proxy_state
+                .as_ref()
+                .and_then(|state| state.clash_config_path())
+                .map(|p| p.to_path_buf());
+
+            if let Some(config_path) = config_path_opt {
+                use clash_chain_patcher::bridge::WatcherBridge;
+
+                match WatcherBridge::new(&config_path) {
+                    Ok(mut bridge) => {
+                        match bridge.start() {
+                            Ok(rx) => {
+                                self.state.watcher_rx = Some(rx);
+                                self.state.watcher_bridge = Some(bridge);
+                                self.add_log(cx, "✓ File watching enabled");
+                                self.add_log(cx, &format!("  Monitoring: {}", config_path.display()));
+                                self.add_log(cx, "  Will auto re-apply on external changes");
+                                eprintln!("DEBUG: File watcher started successfully");
+                            }
+                            Err(e) => {
+                                self.state.watching = false;
+                                self.ui.button(id!(watch_toggle_btn)).set_text(cx, "Watch: OFF");
+                                self.add_log(cx, &format!("✗ Failed to start watcher: {}", e));
+                                eprintln!("ERROR: Failed to start watcher: {}", e);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        self.state.watching = false;
+                        self.ui.button(id!(watch_toggle_btn)).set_text(cx, "Watch: OFF");
+                        self.add_log(cx, &format!("✗ Failed to create watcher: {}", e));
+                        eprintln!("ERROR: Failed to create watcher: {}", e);
+                    }
+                }
+            } else {
+                self.state.watching = false;
+                self.ui.button(id!(watch_toggle_btn)).set_text(cx, "Watch: OFF");
+                self.add_log(cx, "✗ No Clash config file selected");
+                self.add_log(cx, "  Select a file first, then enable Watch");
+            }
         } else {
-            self.add_log(cx, "File watching disabled");
-            // TODO: Stop file watcher
+            // Stop file watcher
+            if let Some(mut bridge) = self.state.watcher_bridge.take() {
+                bridge.stop();
+                self.state.watcher_rx = None;
+                self.add_log(cx, "File watching disabled");
+                eprintln!("DEBUG: File watcher stopped");
+            }
         }
 
         self.ui.redraw(cx);
@@ -986,19 +1046,20 @@ impl App {
         self.ui.redraw(cx);
     }
 
-    fn add_to_recent_files(&mut self, path: String) {
-        // Remove if already exists
-        self.state.recent_files.retain(|p| p != &path);
-
-        // Add to front
-        self.state.recent_files.insert(0, path);
-
-        // Keep only last 5
-        if self.state.recent_files.len() > 5 {
-            self.state.recent_files.truncate(5);
+    fn add_to_recent_files(&mut self, cx: &mut Cx, path: String) {
+        // Save to persistent config through ProxyState
+        if let Some(state) = &mut self.state.proxy_state {
+            if let Err(e) = state.add_recent_file(path.clone()) {
+                eprintln!("Failed to save recent file: {}", e);
+            } else {
+                // Update in-memory list from saved config
+                self.state.recent_files = state.get_recent_files();
+                eprintln!("DEBUG: Saved recent file, now have {} files", self.state.recent_files.len());
+            }
         }
 
-        // TODO: Save to persistent config
+        // Refresh display
+        self.refresh_file_history_display(cx);
     }
 
     fn refresh_file_history_display(&mut self, cx: &mut Cx) {
@@ -1247,6 +1308,41 @@ impl App {
         self.update_log_display(cx);
     }
 
+    fn handle_watcher_event(&mut self, cx: &mut Cx, event: clash_chain_patcher::watcher::WatcherEvent) {
+        use clash_chain_patcher::watcher::WatcherEvent;
+
+        match event {
+            WatcherEvent::ConfigModified(path) | WatcherEvent::ConfigCreated(path) => {
+                eprintln!("DEBUG: Config file modified: {}", path.display());
+                self.add_log(cx, "⚠ Clash config file was modified externally");
+                self.add_log(cx, &format!("  File: {}", path.display()));
+                self.add_log(cx, "  Re-applying Local-Chain-Proxy...");
+
+                // Re-apply the configuration
+                if let Some(state) = &mut self.state.proxy_state {
+                    match state.merge_to_clash() {
+                        Ok(_) => {
+                            self.add_log(cx, "✓ Auto re-applied successfully");
+                            self.add_log(cx, "  Local-Chain-Proxy restored");
+                        }
+                        Err(e) => {
+                            self.add_log(cx, &format!("✗ Auto re-apply failed: {}", e));
+                        }
+                    }
+                } else {
+                    self.add_log(cx, "✗ ProxyState not initialized");
+                }
+
+                self.ui.redraw(cx);
+            }
+            WatcherEvent::Error(error) => {
+                eprintln!("ERROR: File watcher error: {}", error);
+                self.add_log(cx, &format!("✗ Watcher error: {}", error));
+                self.ui.redraw(cx);
+            }
+        }
+    }
+
     fn clear_logs(&mut self, cx: &mut Cx) {
         self.state.logs.clear();
         self.update_log_display(cx);
@@ -1275,6 +1371,13 @@ impl App {
         eprintln!("DEBUG: Loaded {} proxies from config", proxy_count);
 
         self.state.proxy_state = Some(state);
+
+        // Load recent files from config
+        if let Some(state) = &self.state.proxy_state {
+            self.state.recent_files = state.get_recent_files();
+            eprintln!("DEBUG: Loaded {} recent files from config", self.state.recent_files.len());
+            self.refresh_file_history_display(cx);
+        }
 
         // Refresh display will show proxy list (and clear logs to show current state)
         self.refresh_proxy_list_display(cx);

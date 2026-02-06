@@ -283,6 +283,25 @@ impl ProxyState {
     pub fn success_message(&self) -> Option<&str> {
         self.success_message.as_deref()
     }
+
+    // ===== Recent files management =====
+
+    /// Add a recently used configuration file
+    pub fn add_recent_file(&mut self, path: String) -> Result<(), String> {
+        self.config_bridge
+            .as_ref()
+            .ok_or("Config bridge not initialized")?
+            .add_recent_file(path)
+            .map_err(|e| e.to_string())
+    }
+
+    /// Get the list of recently used files
+    pub fn get_recent_files(&self) -> Vec<String> {
+        self.config_bridge
+            .as_ref()
+            .map(|bridge| bridge.get_recent_files())
+            .unwrap_or_default()
+    }
 }
 
 #[cfg(test)]

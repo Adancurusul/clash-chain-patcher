@@ -19,6 +19,10 @@ pub struct AppConfig {
 
     /// Health check configuration
     pub health_check: HealthCheckConfig,
+
+    /// Recently used Clash config file paths (max 5)
+    #[serde(default)]
+    pub recent_files: Vec<String>,
 }
 
 impl Default for AppConfig {
@@ -28,6 +32,7 @@ impl Default for AppConfig {
             clash: ClashConfig::default(),
             local_proxy: LocalProxyConfig::default(),
             health_check: HealthCheckConfig::default(),
+            recent_files: Vec::new(),
         }
     }
 }
@@ -316,6 +321,31 @@ impl ConfigManager {
         proxy.enabled = enabled;
         self.save()?;
         Ok(())
+    }
+
+    // ===== Recent files management =====
+
+    /// Add a recently used file path
+    pub fn add_recent_file(&mut self, path: String) -> Result<()> {
+        // Remove if already exists
+        self.config.recent_files.retain(|p| p != &path);
+
+        // Add to front
+        self.config.recent_files.insert(0, path);
+
+        // Keep only last 5
+        if self.config.recent_files.len() > 5 {
+            self.config.recent_files.truncate(5);
+        }
+
+        // Save to file
+        self.save()?;
+        Ok(())
+    }
+
+    /// Get the list of recently used files
+    pub fn get_recent_files(&self) -> &[String] {
+        &self.config.recent_files
     }
 }
 
