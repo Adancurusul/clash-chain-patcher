@@ -26,19 +26,28 @@
 
 ## Features
 
-### Static Configuration Mode (v0.1.2 - Current)
-- **Add proxy chains** - Prepend a SOCKS5 proxy to existing Clash proxies
-- **Filter proxies** - Select specific proxies by keywords
-- **Two input formats** - Support `user:pass@host:port` and `ip:port:user:pass`
-- **Preview changes** - See what will be modified before applying
+- **Dual Chain Groups** - Creates both auto-select (Chain-Auto) and manual-select (Chain-Selector) groups
+- **Latency Testing** - Chain-Auto uses url-test for automatic fastest node selection
+- **Smart Detection** - Auto-detects main entry group from MATCH rule
+- **Proxy Pool** - Manage multiple SOCKS5 upstream proxies
+- **File Watching** - Auto re-apply when Clash config changes externally
+- **Recent Files** - Quick access to recently used config files (with delete)
 - **Cross-platform** - Windows, macOS, Linux
 
-### Dynamic Proxy Mode (v0.2.0 - Coming Soon)
-- **Local SOCKS5 server** - Run a local proxy server (127.0.0.1:10808)
-- **Auto-configuration** - Automatically monitor Clash config changes
-- **Health checking** - Check upstream proxy availability
-- **Multi-upstream** - Manage multiple upstream SOCKS5 proxies
-- **Auto-failover** - Switch to healthy proxies automatically
+## How It Works
+
+The tool creates relay proxy chains:
+
+1. **Add your SOCKS5 proxy** to the Proxy Pool
+2. **Select Clash config** file
+3. **Click Apply** - The tool will:
+   - Create a `Local-Chain-Proxy` SOCKS5 node
+   - Create `-Chain` relay for each existing proxy (e.g., `Tokyo-01-Chain`)
+   - Create **Chain-Selector** group (select type, for manual selection)
+   - Create **Chain-Auto** group (url-test type, for auto fastest selection)
+   - Add both groups to the main entry group (detected from MATCH rule)
+
+Traffic flow: `VPN Node → Your SOCKS5 Proxy → Internet`
 
 ## Download
 
@@ -54,18 +63,12 @@ Download the latest release from [Releases](../../releases):
 
 ### macOS: First Launch
 
-Since the app is not signed with an Apple Developer certificate, macOS Gatekeeper will block it (shows "damaged").
+Since the app is not signed with an Apple Developer certificate, macOS Gatekeeper will block it.
 
 **Solution: Run in Terminal**
 ```bash
-# If app is in Downloads folder
-xattr -cr ~/Downloads/Clash\ Chain\ Patcher.app
-
-# If moved to Applications
 xattr -cr /Applications/Clash\ Chain\ Patcher.app
 ```
-
-Then you can double-click to open normally.
 
 ### Linux: First Launch
 ```bash
@@ -75,105 +78,105 @@ chmod +x clash-chain-patcher-linux
 
 ## Usage
 
-### 1. Select Config File
-Click **Select** to choose your Clash YAML configuration file.
+### Step 1: Add SOCKS5 Proxy
 
-### 2. Enter SOCKS5 Proxy
-Fill in the proxy details:
-- **Host**: Proxy server hostname or IP
-- **Port**: Proxy port (e.g., 1080)
-- **User/Pass**: Authentication credentials (optional)
+1. Fill in **Host**, **Port**, **User**, **Pass** fields
+2. Click **+ Add** to add to Proxy Pool
+3. Ensure the proxy shows ✓ (enabled)
 
-Or paste a proxy string and click **Fill**:
-```
-user:pass@host:port
-# or
-ip:port:user:pass
-```
+### Step 2: Select Clash Config
 
-### 3. Filter (Optional)
-Enter keywords separated by commas to only patch matching proxies.
-Leave empty to patch all proxies.
+1. Click **Select** to choose your Clash YAML config file
+2. Recent files are saved for quick access (click ▼ to show)
 
-### 4. Preview & Apply
-- **Preview** - See which proxy chains will be created
-- **Apply** - Generate the patched configuration
-- **Save** - Save the result to a new file
+### Step 3: Apply
 
-## How It Works
+1. Click **Apply** button
+2. Wait for completion message
+3. In Clash, refresh configuration
 
-The tool creates "relay" proxy chains by:
+### Step 4: Use Chain Nodes
 
-1. Reading your Clash config
-2. Creating a SOCKS5 proxy entry for your proxy server
-3. For each original proxy, creating a new "relay" type proxy that chains through your SOCKS5
+After applying, you'll see two new groups in Clash sidebar (at the top):
 
-Example:
+- **Chain-Selector** - Manual selection of chain nodes
+- **Chain-Auto** - Auto-select fastest chain node (with latency display)
+
+Select either group, or select them from your main proxy group.
+
+### File Watch (Optional)
+
+Enable **Watch** to auto re-apply when Clash config changes (e.g., subscription updates).
+
+## Example
+
+Original config:
 ```yaml
-# Original proxy
-- name: "Tokyo-01"
-  type: vmess
-  server: example.com
-  ...
+proxies:
+  - name: "Tokyo-01"
+    type: vmess
+    server: example.com
 
-# Generated chain
-- name: "Tokyo-01-chain"
-  type: relay
-  proxies:
-    - "SOCKS5-Proxy"
-    - "Tokyo-01"
+proxy-groups:
+  - name: "Proxy"
+    type: select
+    proxies: ["Tokyo-01"]
+
+rules:
+  - MATCH,Proxy
+```
+
+After Apply:
+```yaml
+proxies:
+  - name: "Local-Chain-Proxy"
+    type: socks5
+    server: your-socks5-host
+    port: 1080
+    username: user
+    password: pass
+
+  - name: "Tokyo-01"
+    type: vmess
+    server: example.com
+
+  - name: "Tokyo-01-Chain"
+    type: relay
+    proxies:
+      - "Tokyo-01"
+      - "Local-Chain-Proxy"
+
+proxy-groups:
+  - name: "Chain-Selector"
+    type: select
+    proxies: ["Tokyo-01-Chain"]
+
+  - name: "Chain-Auto"
+    type: url-test
+    proxies: ["Tokyo-01-Chain"]
+    url: "http://www.gstatic.com/generate_204"
+    interval: 300
+
+  - name: "Proxy"
+    type: select
+    proxies: ["Chain-Selector", "Chain-Auto", "Tokyo-01"]
 ```
 
 ## Building
 
 ### Prerequisites
 - Rust 1.70+
-- Python 3.8+ (for icon generation)
 
 ### Build from source
 
 ```bash
-# Clone
 git clone https://github.com/user/clash-chain-patcher.git
 cd clash-chain-patcher
-
-# Generate icons (optional, for custom logo)
-pip install pillow
-python scripts/generate_icons.py
-
-# Build
 cargo build --release
-
-# macOS: Create .app bundle
-./scripts/bundle_macos.sh
 ```
 
-### Build outputs
-- **Windows**: `target/release/clash-chain-patcher.exe` (icon embedded)
-- **macOS**: `target/bundle/Clash Chain Patcher.app`
-- **Linux**: `target/release/clash-chain-patcher`
+## Tech Stack
 
-## Development
-
-### Project Structure
-```
-clash-chain-patcher-rust/
-├── src/
-│   ├── main.rs          # Entry point
-│   ├── app.rs           # GUI application
-│   └── patcher.rs       # Core patching logic
-├── logo/
-│   ├── clash-chain-patcher.png  # Source logo
-│   ├── AppIcon.icns     # macOS icon
-│   └── app.ico          # Windows icon
-├── scripts/
-│   ├── generate_icons.py    # Icon converter
-│   └── bundle_macos.sh      # macOS bundler
-└── .github/workflows/
-    └── release.yml      # CI/CD
-```
-
-### Tech Stack
 - **GUI**: [Makepad](https://github.com/makepad/makepad) - Rust UI framework
 - **YAML**: serde_yaml
 - **File dialogs**: rfd
@@ -185,14 +188,9 @@ This software is provided for **educational and research purposes only**.
 - This tool is intended solely for learning network technologies and personal research
 - Users are responsible for ensuring their use complies with all applicable local laws and regulations
 - The author assumes no liability for any misuse, damage, or legal consequences arising from the use of this software
-- By using this software, you agree that you understand and accept these terms
 
 **Use at your own risk.**
 
 ## License
 
 MIT License
-
-## Contributing
-
-Issues and Pull Requests are welcome!

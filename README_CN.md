@@ -26,11 +26,28 @@
 
 ## 功能特性
 
-- **添加代理链** - 在现有 Clash 代理前添加 SOCKS5 代理
-- **过滤代理** - 通过关键词筛选特定代理
-- **两种输入格式** - 支持 `user:pass@host:port` 和 `ip:port:user:pass`
-- **预览更改** - 应用前查看将要修改的内容
+- **双链组** - 同时创建自动选择 (Chain-Auto) 和手动选择 (Chain-Selector) 两个组
+- **延迟测试** - Chain-Auto 使用 url-test 自动选择最快节点
+- **智能检测** - 从 MATCH 规则自动检测主入口组
+- **代理池** - 管理多个 SOCKS5 上游代理
+- **文件监视** - Clash 配置被外部修改时自动重新应用
+- **最近文件** - 快速访问最近使用的配置文件（支持删除）
 - **跨平台** - 支持 Windows、macOS、Linux
+
+## 工作原理
+
+工具创建中继代理链：
+
+1. **添加你的 SOCKS5 代理** 到代理池
+2. **选择 Clash 配置** 文件
+3. **点击 Apply** - 工具会：
+   - 创建 `Local-Chain-Proxy` SOCKS5 节点
+   - 为每个现有代理创建 `-Chain` 中继（如 `Tokyo-01-Chain`）
+   - 创建 **Chain-Selector** 组（select 类型，用于手动选择）
+   - 创建 **Chain-Auto** 组（url-test 类型，用于自动选最快）
+   - 将两个组添加到主入口组（从 MATCH 规则自动检测）
+
+流量走向：`VPN 节点 → 你的 SOCKS5 代理 → 互联网`
 
 ## 下载
 
@@ -42,22 +59,16 @@
 | Windows | `*-portable.zip` | 便携版（解压即用） |
 | macOS | `Clash-Chain-Patcher-macos.dmg` | 拖拽到应用程序 |
 | macOS | `Clash-Chain-Patcher-macos.zip` | 包含 .app 包 |
-| Linux | `clash-chain-patcher-linux` | 需要 `chmod +x` 添加执行权限 |
+| Linux | `clash-chain-patcher-linux` | 需要 `chmod +x` |
 
 ### macOS: 首次启动
 
-由于应用未使用 Apple 开发者证书签名，macOS Gatekeeper 会阻止打开（显示"已损坏"）。
+由于应用未签名，macOS Gatekeeper 会阻止打开。
 
 **解决方法：在终端运行**
 ```bash
-# 如果应用在 Downloads 文件夹
-xattr -cr ~/Downloads/Clash\ Chain\ Patcher.app
-
-# 如果已移动到 Applications
 xattr -cr /Applications/Clash\ Chain\ Patcher.app
 ```
-
-然后即可正常双击打开。
 
 ### Linux: 首次启动
 ```bash
@@ -67,105 +78,105 @@ chmod +x clash-chain-patcher-linux
 
 ## 使用方法
 
-### 1. 选择配置文件
-点击 **Select** 选择你的 Clash YAML 配置文件。
+### 第一步：添加 SOCKS5 代理
 
-### 2. 输入 SOCKS5 代理
-填写代理信息：
-- **Host**: 代理服务器主机名或 IP
-- **Port**: 代理端口（如 1080）
-- **User/Pass**: 认证凭据（可选）
+1. 填写 **Host**、**Port**、**User**、**Pass** 字段
+2. 点击 **+ Add** 添加到代理池
+3. 确保代理显示 ✓（已启用）
 
-或者粘贴代理字符串后点击 **Fill**：
-```
-user:pass@host:port
-# 或
-ip:port:user:pass
-```
+### 第二步：选择 Clash 配置
 
-### 3. 过滤（可选）
-输入关键词（逗号分隔）来只修改匹配的代理。
-留空则修改所有代理。
+1. 点击 **Select** 选择 Clash YAML 配置文件
+2. 最近使用的文件会被保存，点击 ▼ 可快速选择
 
-### 4. 预览和应用
-- **Preview** - 查看将创建哪些代理链
-- **Apply** - 生成修改后的配置
-- **Save** - 保存结果到新文件
+### 第三步：应用
 
-## 工作原理
+1. 点击 **Apply** 按钮
+2. 等待完成提示
+3. 在 Clash 中刷新配置
 
-工具通过以下方式创建"中继"代理链：
+### 第四步：使用链式节点
 
-1. 读取你的 Clash 配置
-2. 为你的代理服务器创建一个 SOCKS5 代理条目
-3. 为每个原始代理创建一个新的 "relay" 类型代理，通过你的 SOCKS5 进行链接
+应用后，Clash 侧边栏顶部会出现两个新组：
 
-示例：
+- **Chain-Selector** - 手动选择链式节点
+- **Chain-Auto** - 自动选择最快链式节点（显示延迟）
+
+可以直接选择这两个组，或从主代理组中选择它们。
+
+### 文件监视（可选）
+
+启用 **Watch** 可在 Clash 配置被修改时（如订阅更新）自动重新应用。
+
+## 示例
+
+原始配置：
 ```yaml
-# 原始代理
-- name: "Tokyo-01"
-  type: vmess
-  server: example.com
-  ...
+proxies:
+  - name: "Tokyo-01"
+    type: vmess
+    server: example.com
 
-# 生成的链
-- name: "Tokyo-01-chain"
-  type: relay
-  proxies:
-    - "SOCKS5-Proxy"
-    - "Tokyo-01"
+proxy-groups:
+  - name: "Proxy"
+    type: select
+    proxies: ["Tokyo-01"]
+
+rules:
+  - MATCH,Proxy
+```
+
+应用后：
+```yaml
+proxies:
+  - name: "Local-Chain-Proxy"
+    type: socks5
+    server: your-socks5-host
+    port: 1080
+    username: user
+    password: pass
+
+  - name: "Tokyo-01"
+    type: vmess
+    server: example.com
+
+  - name: "Tokyo-01-Chain"
+    type: relay
+    proxies:
+      - "Tokyo-01"
+      - "Local-Chain-Proxy"
+
+proxy-groups:
+  - name: "Chain-Selector"
+    type: select
+    proxies: ["Tokyo-01-Chain"]
+
+  - name: "Chain-Auto"
+    type: url-test
+    proxies: ["Tokyo-01-Chain"]
+    url: "http://www.gstatic.com/generate_204"
+    interval: 300
+
+  - name: "Proxy"
+    type: select
+    proxies: ["Chain-Selector", "Chain-Auto", "Tokyo-01"]
 ```
 
 ## 编译构建
 
 ### 前置要求
 - Rust 1.70+
-- Python 3.8+（用于图标生成）
 
 ### 从源码构建
 
 ```bash
-# 克隆
 git clone https://github.com/user/clash-chain-patcher.git
 cd clash-chain-patcher
-
-# 生成图标（可选，用于自定义 logo）
-pip install pillow
-python scripts/generate_icons.py
-
-# 构建
 cargo build --release
-
-# macOS: 创建 .app 包
-./scripts/bundle_macos.sh
 ```
 
-### 构建输出
-- **Windows**: `target/release/clash-chain-patcher.exe`（图标已嵌入）
-- **macOS**: `target/bundle/Clash Chain Patcher.app`
-- **Linux**: `target/release/clash-chain-patcher`
+## 技术栈
 
-## 开发
-
-### 项目结构
-```
-clash-chain-patcher-rust/
-├── src/
-│   ├── main.rs          # 入口点
-│   ├── app.rs           # GUI 应用
-│   └── patcher.rs       # 核心修改逻辑
-├── logo/
-│   ├── clash-chain-patcher.png  # 源 logo
-│   ├── AppIcon.icns     # macOS 图标
-│   └── app.ico          # Windows 图标
-├── scripts/
-│   ├── generate_icons.py    # 图标转换器
-│   └── bundle_macos.sh      # macOS 打包器
-└── .github/workflows/
-    └── release.yml      # CI/CD
-```
-
-### 技术栈
 - **GUI**: [Makepad](https://github.com/makepad/makepad) - Rust UI 框架
 - **YAML**: serde_yaml
 - **文件对话框**: rfd
@@ -177,14 +188,9 @@ clash-chain-patcher-rust/
 - 本工具仅用于学习网络技术和个人研究目的
 - 用户需自行确保使用行为符合当地法律法规
 - 作者不对因使用本软件产生的任何滥用、损失或法律后果承担责任
-- 使用本软件即表示您已理解并接受上述条款
 
 **风险自负。**
 
 ## 许可证
 
 MIT License
-
-## 贡献
-
-欢迎提交 Issues 和 Pull Requests！
