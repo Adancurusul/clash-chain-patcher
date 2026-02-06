@@ -676,6 +676,14 @@ live_design! {
     }
 }
 
+/// Result of an Apply operation
+#[derive(Debug)]
+pub struct ApplyResult {
+    pub success: bool,
+    pub message: String,
+    pub details: Vec<String>,
+}
+
 pub struct AppState {
     config_content: Option<String>,
     config_filename: Option<String>,
@@ -704,6 +712,10 @@ pub struct AppState {
     watcher_rx: Option<tokio::sync::mpsc::UnboundedReceiver<clash_chain_patcher::watcher::WatcherEvent>>,
     /// File watcher bridge instance
     watcher_bridge: Option<clash_chain_patcher::bridge::WatcherBridge>,
+    /// Apply operation result channel
+    apply_result_rx: Option<std::sync::mpsc::Receiver<ApplyResult>>,
+    /// Whether an Apply operation is in progress
+    is_applying: bool,
 }
 
 impl Default for AppState {
@@ -725,6 +737,8 @@ impl Default for AppState {
             auto_check_handle: None,
             watcher_rx: None,
             watcher_bridge: None,
+            apply_result_rx: None,
+            is_applying: false,
         }
     }
 }
@@ -879,6 +893,15 @@ impl AppMain for App {
         // Process file watcher events
         for event in watcher_events {
             self.handle_watcher_event(cx, event);
+        }
+
+        // Check for Apply operation results
+        if let Some(rx) = &self.state.apply_result_rx {
+            if let Ok(result) = rx.try_recv() {
+                self.handle_apply_result(cx, result);
+                self.state.apply_result_rx = None;
+                self.state.is_applying = false;
+            }
         }
 
         self.match_event(cx, event);
@@ -1174,108 +1197,110 @@ impl App {
     }
 
     fn apply_patch(&mut self, cx: &mut Cx) {
-        self.clear_logs(cx);
-        let config = match &self.state.config_content {
-            Some(c) => c.clone(),
-            None => { self.add_log(cx, "Select file first"); self.ui.redraw(cx); return; }
-        };
-
-        // Check if we have enabled proxies in pool
-        let has_pool_proxies = if let Some(state) = &self.state.proxy_state {
-            state.list_upstreams().iter().any(|p| p.enabled)
-        } else {
-            false
-        };
-
-        if has_pool_proxies {
-            // Use proxy pool mode
-            self.add_log(cx, "Using proxy pool mode");
-            self.apply_with_pool(cx, &config);
-        } else {
-            // Use single proxy mode (original behavior)
-            let proxy = match self.get_proxy_from_form() {
-                Some(p) => p,
-                None => { self.add_log(cx, "Fill proxy info or add proxies to pool"); self.ui.redraw(cx); return; }
-            };
-            let opts = self.get_options_from_form();
-            let result = patcher::apply_patch(&config, &proxy, &opts);
-            for log in &result.logs { self.add_log(cx, log); }
-            if result.success {
-                self.state.output_content = result.output;
-                self.add_log(cx, "");
-                self.add_log(cx, "Done! Click Save");
-                self.set_status(cx, "Done");
-            } else { self.set_status(cx, "Failed"); }
+        // Check if already applying
+        if self.state.is_applying {
+            self.add_log(cx, "⚠ Apply is already in progress");
+            return;
         }
-        self.ui.redraw(cx);
-    }
 
-    fn apply_with_pool(&mut self, cx: &mut Cx, _config: &str) {
-        // Extract data first (immutable borrow)
-        let (enabled_proxies, has_config_path, merge_result) = {
-            if let Some(state) = &mut self.state.proxy_state {
-                // Get enabled proxies
-                let enabled_proxies: Vec<_> = state.list_upstreams()
-                    .iter()
-                    .filter(|p| p.enabled)
-                    .map(|p| p.name.clone())
-                    .collect();
+        // Check if config file is selected
+        if self.state.config_filename.is_none() {
+            self.add_log(cx, "✗ Select file first");
+            return;
+        }
 
-                let has_config_path = state.clash_config_path().is_some();
-
-                // Merge if we have everything
-                let merge_result = if !enabled_proxies.is_empty() && has_config_path {
-                    Some(state.merge_to_clash())
-                } else {
-                    None
-                };
-
-                (enabled_proxies, has_config_path, merge_result)
-            } else {
-                (Vec::new(), false, None)
-            }
+        // Check ProxyState
+        let Some(state) = &self.state.proxy_state else {
+            self.add_log(cx, "✗ ProxyState not initialized");
+            return;
         };
 
-        // Now use self mutably for logging
+        // Get enabled proxies
+        let enabled_proxies: Vec<_> = state.list_upstreams()
+            .into_iter()
+            .filter(|p| p.enabled)
+            .collect();
+
         if enabled_proxies.is_empty() {
-            self.add_log(cx, "✗ No enabled proxies in pool");
-            self.set_status(cx, "Error");
+            self.add_log(cx, "✗ No enabled proxies");
+            self.add_log(cx, "  Add and enable at least 1 proxy");
             return;
         }
 
-        self.add_log(cx, &format!("Using {} enabled proxies:", enabled_proxies.len()));
-        for name in &enabled_proxies {
-            self.add_log(cx, &format!("  - {}", name));
-        }
-        self.add_log(cx, "");
+        // Extract config path
+        let config_path = state.clash_config_path()
+            .map(|p| p.to_path_buf());
 
-        if !has_config_path {
-            self.add_log(cx, "✗ Please select Clash config file first");
-            self.set_status(cx, "Error");
+        let Some(config_path) = config_path else {
+            self.add_log(cx, "✗ Clash config path not set");
             return;
-        }
+        };
 
-        // Process merge result
-        if let Some(result) = merge_result {
-            self.add_log(cx, "Merging proxy pool to Clash config...");
-            match result {
-                Ok(()) => {
-                    self.add_log(cx, "✓ Successfully merged to Clash config!");
-                    self.add_log(cx, "");
-                    self.add_log(cx, "Proxy chain created:");
-                    self.add_log(cx, "  Local SOCKS5: 127.0.0.1:10808");
-                    self.add_log(cx, &format!("  Chain length: {} proxies", enabled_proxies.len()));
-                    self.add_log(cx, "");
-                    self.add_log(cx, "Clash config has been updated!");
-                    self.add_log(cx, "Please restart Clash to apply changes.");
-                    self.set_status(cx, "Done");
+        // Create channel for result
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.state.apply_result_rx = Some(rx);
+        self.state.is_applying = true;
+
+        // Display progress
+        self.clear_logs(cx);
+        self.add_log(cx, "⏳ Applying configuration...");
+        self.add_log(cx, &format!("  {} enabled proxies", enabled_proxies.len()));
+        self.add_log(cx, "  (Non-blocking, UI remains responsive)");
+        self.set_status(cx, "Applying...");
+
+        // Spawn background thread
+        std::thread::spawn(move || {
+            use clash_chain_patcher::bridge::MergerBridge;
+
+            let result = (|| -> Result<ApplyResult, String> {
+                // Create MergerBridge
+                let merger = MergerBridge::new();
+
+                // Execute merge
+                match merger.merge(&config_path) {
+                    Ok(merge_result) => {
+                        let mut details = Vec::new();
+                        details.push("Using proxy pool mode".to_string());
+                        details.push(format!("Enabled proxies: {}", enabled_proxies.len()));
+
+                        for proxy in &enabled_proxies {
+                            details.push(format!("  - {}", proxy.name));
+                        }
+
+                        details.push("".to_string());
+                        details.push(format!("Proxy added: {}", merge_result.proxy_added));
+                        details.push(format!("Groups updated: {}", merge_result.groups_updated));
+
+                        if let Some(backup_path) = merge_result.backup_path {
+                            details.push(format!("Backup: {}", backup_path.display()));
+                        }
+
+                        Ok(ApplyResult {
+                            success: true,
+                            message: "✓ Configuration applied successfully".to_string(),
+                            details,
+                        })
+                    }
+                    Err(e) => {
+                        Ok(ApplyResult {
+                            success: false,
+                            message: format!("✗ Apply failed: {}", e),
+                            details: vec![],
+                        })
+                    }
                 }
-                Err(e) => {
-                    self.add_log(cx, &format!("✗ Merge failed: {}", e));
-                    self.set_status(cx, "Error");
-                }
-            }
-        }
+            })();
+
+            let apply_result = result.unwrap_or_else(|e| ApplyResult {
+                success: false,
+                message: format!("✗ Error: {}", e),
+                details: vec![],
+            });
+
+            let _ = tx.send(apply_result);
+        });
+
+        self.ui.redraw(cx);
     }
 
     fn save_output(&mut self, cx: &mut Cx) {
@@ -1341,6 +1366,32 @@ impl App {
                 self.ui.redraw(cx);
             }
         }
+    }
+
+    fn handle_apply_result(&mut self, cx: &mut Cx, result: ApplyResult) {
+        eprintln!("DEBUG: Apply completed: success={}", result.success);
+
+        self.clear_logs(cx);
+        self.add_log(cx, &result.message);
+
+        for detail in result.details {
+            self.add_log(cx, &detail);
+        }
+
+        if result.success {
+            self.add_log(cx, "");
+            self.add_log(cx, "Local proxy: 127.0.0.1:10808");
+            self.add_log(cx, "");
+            self.add_log(cx, "Next steps:");
+            self.add_log(cx, "1. Refresh Clash configuration");
+            self.add_log(cx, "2. Select 'Local-Chain-Proxy' in Clash");
+            self.add_log(cx, "3. Enable Watch to protect against subscription updates");
+            self.set_status(cx, "Done");
+        } else {
+            self.set_status(cx, "Failed");
+        }
+
+        self.ui.redraw(cx);
     }
 
     fn clear_logs(&mut self, cx: &mut Cx) {
