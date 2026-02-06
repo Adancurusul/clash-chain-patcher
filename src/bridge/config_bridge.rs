@@ -133,6 +133,15 @@ impl ConfigBridge {
             manager.get_recent_files().to_vec()
         })
     }
+
+    /// Remove a recently used file by index
+    pub fn remove_recent_file(&self, index: usize) -> BridgeResult<()> {
+        self.runtime.block_on(async {
+            let mut manager = self.manager.write().await;
+            manager.remove_recent_file(index)
+                .map_err(|e| BridgeError::Config(e.to_string()))
+        })
+    }
 }
 
 impl Default for ConfigBridge {

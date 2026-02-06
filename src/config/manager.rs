@@ -347,6 +347,15 @@ impl ConfigManager {
     pub fn get_recent_files(&self) -> &[String] {
         &self.config.recent_files
     }
+
+    /// Remove a recently used file by index
+    pub fn remove_recent_file(&mut self, index: usize) -> Result<()> {
+        if index < self.config.recent_files.len() {
+            self.config.recent_files.remove(index);
+            self.save()?;
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]

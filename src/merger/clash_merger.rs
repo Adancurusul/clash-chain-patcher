@@ -23,6 +23,12 @@ pub struct MergerConfig {
     /// Local proxy server port (default: 10808)
     pub proxy_port: u16,
 
+    /// SOCKS5 username (optional)
+    pub proxy_username: Option<String>,
+
+    /// SOCKS5 password (optional)
+    pub proxy_password: Option<String>,
+
     /// Whether to create backups (default: true)
     pub create_backup: bool,
 
@@ -39,6 +45,8 @@ impl Default for MergerConfig {
             proxy_name: "Local-Chain-Proxy".to_string(),
             proxy_host: "127.0.0.1".to_string(),
             proxy_port: 10808,
+            proxy_username: None,
+            proxy_password: None,
             create_backup: true,
             insert_at_beginning: true,
             chain_suffix: "-Chain".to_string(),
@@ -167,13 +175,64 @@ impl ClashConfigMerger {
         // Get list of existing proxy names (before adding chains)
         let existing_proxies = self.get_proxy_names(config_map)?;
 
+        // Detect the main entry group from rules
+        let main_group = self.detect_main_group(config_map);
+        if let Some(ref name) = main_group {
+            info!("Detected main entry group: {}", name);
+        }
+
         // Create relay chain proxies for each existing proxy
+        // This also creates Chain-Selector group
         result.chains_created = self.create_chain_proxies(config_map, &existing_proxies, result)?;
 
-        // Add chain proxies to proxy groups
-        result.groups_updated = self.add_chains_to_groups(config_map, &existing_proxies, result)?;
+        // Add Chain-Selector and Chain-Auto to the main entry group
+        result.groups_updated = self.add_selector_to_main_group(config_map, main_group.as_deref(), result)?;
 
         Ok(())
+    }
+
+    /// Detect the main entry group from rules section
+    /// Priority: 1. MATCH rule (default route), 2. First proxy-group of select type
+    fn detect_main_group(&self, config: &Mapping) -> Option<String> {
+        // First, try to find MATCH rule (the default/fallback route)
+        if let Some(rules) = config.get(&Value::String("rules".to_string())) {
+            if let Some(rules_seq) = rules.as_sequence() {
+                for rule in rules_seq {
+                    if let Some(rule_str) = rule.as_str() {
+                        // MATCH rule format: "MATCH,GROUP"
+                        if rule_str.starts_with("MATCH,") {
+                            let parts: Vec<&str> = rule_str.split(',').collect();
+                            if parts.len() >= 2 {
+                                let group = parts[1].trim();
+                                if group != "DIRECT" && group != "REJECT" {
+                                    return Some(group.to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Fallback: find first select-type proxy group
+        if let Some(proxy_groups) = config.get(&Value::String("proxy-groups".to_string())) {
+            if let Some(groups_seq) = proxy_groups.as_sequence() {
+                for group in groups_seq {
+                    if let Some(group_type) = group.get("type").and_then(|v| v.as_str()) {
+                        if group_type == "select" {
+                            if let Some(name) = group.get("name").and_then(|v| v.as_str()) {
+                                // Skip our own chain groups
+                                if !name.starts_with("Chain-") && !name.ends_with("-Chain") {
+                                    return Some(name.to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        None
     }
 
     /// Get list of proxy names from config
@@ -199,7 +258,7 @@ impl ClashConfigMerger {
         Ok(names)
     }
 
-    /// Add the local proxy node to the proxies list
+    /// Add or update the local proxy node in the proxies list
     fn add_proxy_node(&self, config: &mut Mapping) -> Result<bool> {
         // Ensure proxies section exists
         if !config.contains_key(&Value::String("proxies".to_string())) {
@@ -216,12 +275,53 @@ impl ClashConfigMerger {
         let proxies_seq = proxies.as_sequence_mut()
             .context("Proxies section must be a sequence")?;
 
-        // Check if proxy already exists
-        for proxy in proxies_seq.iter() {
+        // Check if proxy already exists and update it
+        for proxy in proxies_seq.iter_mut() {
             if let Some(name) = proxy.get("name").and_then(|v| v.as_str()) {
                 if name == self.config.proxy_name {
-                    debug!("Proxy '{}' already exists", self.config.proxy_name);
-                    return Ok(false);
+                    // Update existing proxy with new configuration
+                    if let Some(proxy_map) = proxy.as_mapping_mut() {
+                        proxy_map.insert(
+                            Value::String("server".to_string()),
+                            Value::String(self.config.proxy_host.clone()),
+                        );
+                        proxy_map.insert(
+                            Value::String("port".to_string()),
+                            Value::Number(self.config.proxy_port.into()),
+                        );
+                        // Update or remove username
+                        if let Some(ref username) = self.config.proxy_username {
+                            if !username.is_empty() {
+                                proxy_map.insert(
+                                    Value::String("username".to_string()),
+                                    Value::String(username.clone()),
+                                );
+                            } else {
+                                proxy_map.remove(&Value::String("username".to_string()));
+                            }
+                        } else {
+                            proxy_map.remove(&Value::String("username".to_string()));
+                        }
+                        // Update or remove password
+                        if let Some(ref password) = self.config.proxy_password {
+                            if !password.is_empty() {
+                                proxy_map.insert(
+                                    Value::String("password".to_string()),
+                                    Value::String(password.clone()),
+                                );
+                            } else {
+                                proxy_map.remove(&Value::String("password".to_string()));
+                            }
+                        } else {
+                            proxy_map.remove(&Value::String("password".to_string()));
+                        }
+                        info!("Updated existing proxy: {} ({}:{})",
+                            self.config.proxy_name,
+                            self.config.proxy_host,
+                            self.config.proxy_port
+                        );
+                    }
+                    return Ok(false); // Not added, but updated
                 }
             }
         }
@@ -245,9 +345,31 @@ impl ClashConfigMerger {
             Value::Number(self.config.proxy_port.into()),
         );
 
+        // Add username/password if provided
+        if let Some(ref username) = self.config.proxy_username {
+            if !username.is_empty() {
+                proxy_node.insert(
+                    Value::String("username".to_string()),
+                    Value::String(username.clone()),
+                );
+            }
+        }
+        if let Some(ref password) = self.config.proxy_password {
+            if !password.is_empty() {
+                proxy_node.insert(
+                    Value::String("password".to_string()),
+                    Value::String(password.clone()),
+                );
+            }
+        }
+
         proxies_seq.push(Value::Mapping(proxy_node));
 
-        info!("Added proxy node: {}", self.config.proxy_name);
+        info!("Added proxy node: {} ({}:{})",
+            self.config.proxy_name,
+            self.config.proxy_host,
+            self.config.proxy_port
+        );
         Ok(true)
     }
 
@@ -311,16 +433,201 @@ impl ClashConfigMerger {
                     Value::String(self.config.proxy_name.clone()), // Second: SOCKS5 proxy
                 ]),
             );
+            // Add benchmark URL for latency testing (required for relay groups)
+            relay_group.insert(
+                Value::String("benchmark-url".to_string()),
+                Value::String("http://www.gstatic.com/generate_204".to_string()),
+            );
+            relay_group.insert(
+                Value::String("benchmark-timeout".to_string()),
+                Value::Number(5.into()),
+            );
 
             groups_seq.push(Value::Mapping(relay_group));
             info!("Created chain relay: {} -> {}", proxy_name, self.config.proxy_name);
             chains_created += 1;
         }
 
+        // Create Chain-Auto and Chain-Selector groups
+        // Chain-Auto: url-test type, auto select fastest chain
+        // Chain-Selector: select type, manual selection
+        if !existing_proxies.is_empty() {
+            let auto_name = "Chain-Auto";
+            let selector_name = "Chain-Selector";
+
+            // Collect all chain names (both existing and newly created)
+            let chain_names: Vec<Value> = existing_proxies
+                .iter()
+                .map(|name| Value::String(format!("{}{}", name, self.config.chain_suffix)))
+                .collect();
+
+            // Remove existing Chain-Auto and Chain-Selector if present
+            groups_seq.retain(|g| {
+                g.get("name")
+                    .and_then(|v| v.as_str())
+                    .map(|n| n != auto_name && n != selector_name)
+                    .unwrap_or(true)
+            });
+
+            // Create Chain-Auto (url-test) - auto select fastest
+            let mut auto_group = Mapping::new();
+            auto_group.insert(
+                Value::String("name".to_string()),
+                Value::String(auto_name.to_string()),
+            );
+            auto_group.insert(
+                Value::String("type".to_string()),
+                Value::String("url-test".to_string()),
+            );
+            auto_group.insert(
+                Value::String("proxies".to_string()),
+                Value::Sequence(chain_names.clone()),
+            );
+            auto_group.insert(
+                Value::String("url".to_string()),
+                Value::String("http://www.gstatic.com/generate_204".to_string()),
+            );
+            auto_group.insert(
+                Value::String("interval".to_string()),
+                Value::Number(300.into()),
+            );
+            auto_group.insert(
+                Value::String("tolerance".to_string()),
+                Value::Number(50.into()),
+            );
+
+            // Create Chain-Selector (select) - manual selection
+            let mut selector_group = Mapping::new();
+            selector_group.insert(
+                Value::String("name".to_string()),
+                Value::String(selector_name.to_string()),
+            );
+            selector_group.insert(
+                Value::String("type".to_string()),
+                Value::String("select".to_string()),
+            );
+            selector_group.insert(
+                Value::String("proxies".to_string()),
+                Value::Sequence(chain_names),
+            );
+
+            // Insert at the beginning: Chain-Selector first, then Chain-Auto
+            // So sidebar shows: Chain-Selector, Chain-Auto, ...
+            groups_seq.insert(0, Value::Mapping(auto_group));
+            groups_seq.insert(0, Value::Mapping(selector_group));
+            info!("Created Chain-Selector (select) and Chain-Auto (url-test) at top with {} chain proxies", chains_created);
+        }
+
         Ok(chains_created)
     }
 
-    /// Add chain proxies to select-type proxy groups
+    /// Add Chain-Selector and Chain-Auto to the main entry group
+    /// The main group is auto-detected from rules, or falls back to first select-type group
+    fn add_selector_to_main_group(
+        &self,
+        config: &mut Mapping,
+        main_group_name: Option<&str>,
+        result: &mut MergeResult,
+    ) -> Result<usize> {
+        let auto_name = "Chain-Auto";
+        let selector_name = "Chain-Selector";
+
+        // Check if proxy-groups section exists
+        if !config.contains_key(&Value::String("proxy-groups".to_string())) {
+            result.warnings.push("No proxy-groups section found in config".to_string());
+            return Ok(0);
+        }
+
+        let proxy_groups = config
+            .get_mut(&Value::String("proxy-groups".to_string()))
+            .context("Failed to get proxy-groups section")?;
+
+        let groups_seq = proxy_groups.as_sequence_mut()
+            .context("Proxy-groups section must be a sequence")?;
+
+        let mut updated_count = 0;
+
+        for group in groups_seq.iter_mut() {
+            let group_map = match group.as_mapping_mut() {
+                Some(m) => m,
+                None => {
+                    result.warnings.push("Invalid proxy group format".to_string());
+                    continue;
+                }
+            };
+
+            // Get group name
+            let group_name = group_map
+                .get(&Value::String("name".to_string()))
+                .and_then(|v| v.as_str())
+                .unwrap_or("<unknown>")
+                .to_string();
+
+            // Only process the main entry group (if detected)
+            if let Some(main_name) = main_group_name {
+                if group_name != main_name {
+                    continue;
+                }
+            } else {
+                // No main group detected, skip (chain groups are still created at top)
+                continue;
+            }
+
+            // Check if this is a select-type group
+            let group_type = match group_map.get(&Value::String("type".to_string())) {
+                Some(Value::String(t)) => t.as_str(),
+                _ => continue,
+            };
+
+            if group_type != "select" {
+                warn!("Main group '{}' is not select type, skipping", group_name);
+                continue;
+            }
+
+            // Ensure proxies array exists
+            if !group_map.contains_key(&Value::String("proxies".to_string())) {
+                continue;
+            }
+
+            let group_proxies = group_map
+                .get_mut(&Value::String("proxies".to_string()))
+                .context("Failed to get group proxies")?;
+
+            let group_proxies_seq = group_proxies.as_sequence_mut()
+                .context("Group proxies must be a sequence")?;
+
+            // Check what's already in this group
+            let has_selector = group_proxies_seq
+                .iter()
+                .any(|p| p.as_str() == Some(selector_name));
+            let has_auto = group_proxies_seq
+                .iter()
+                .any(|p| p.as_str() == Some(auto_name));
+
+            // Add Chain-Auto at position 0 (if not exists)
+            if !has_auto {
+                group_proxies_seq.insert(0, Value::String(auto_name.to_string()));
+            }
+
+            // Add Chain-Selector at position 0 (if not exists), so it's before Chain-Auto
+            if !has_selector {
+                group_proxies_seq.insert(0, Value::String(selector_name.to_string()));
+            }
+
+            if !has_selector || !has_auto {
+                info!("Added Chain-Selector and Chain-Auto to main group: {}", group_name);
+                updated_count += 1;
+            }
+
+            // Only process main group, break after found
+            break;
+        }
+
+        Ok(updated_count)
+    }
+
+    /// Add chain proxies to select-type proxy groups (legacy, not currently used)
+    #[allow(dead_code)]
     fn add_chains_to_groups(
         &self,
         config: &mut Mapping,

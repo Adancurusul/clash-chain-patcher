@@ -9,17 +9,22 @@ use makepad_widgets::*;
 use crate::app::App;
 
 impl App {
-    /// Add a log message
-    pub(crate) fn add_log(&mut self, _cx: &mut Cx, message: &str) {
+    /// Add a log message and update display
+    pub(crate) fn add_log(&mut self, cx: &mut Cx, message: &str) {
         self.state.logs.push(message.to_string());
+        // Auto-update display
+        let log_text = self.state.logs.join("\n");
+        self.ui.label(id!(log_text)).set_text(cx, &log_text);
     }
 
-    /// Clear all logs
-    pub(crate) fn clear_logs(&mut self, _cx: &mut Cx) {
+    /// Clear all logs and update display
+    pub(crate) fn clear_logs(&mut self, cx: &mut Cx) {
         self.state.logs.clear();
+        // Auto-update display
+        self.ui.label(id!(log_text)).set_text(cx, "");
     }
 
-    /// Update the log display from the logs buffer
+    /// Update the log display from the logs buffer (for manual refresh)
     pub(crate) fn update_log_display(&mut self, cx: &mut Cx) {
         let log_text = self.state.logs.join("\n");
         self.ui.label(id!(log_text)).set_text(cx, &log_text);

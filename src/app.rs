@@ -162,45 +162,60 @@ live_design! {
                             draw_text: {color: #888888, text_style: {font_size: 9.0}}
                         }
 
-                        recent_file_1 = <Button> {
+                        // Recent file 1
+                        recent_file_row_1 = <View> {
                             visible: false,
-                            width: Fill,
-                            height: Fit,
-                            padding: {left: 4, right: 4, top: 2, bottom: 2},
-                            text: ""
-                            draw_text: {color: #aaccff, text_style: {font_size: 9.0}}
-                            draw_bg: {
-                                fn pixel(self) -> vec4 {
-                                    return mix(#2a2a2a, #444444, self.hover);
-                                }
+                            width: Fill, height: Fit, flow: Right, spacing: 4, align: {y: 0.5}
+                            recent_file_1 = <Button> {
+                                width: Fill, height: Fit,
+                                padding: {left: 4, right: 4, top: 2, bottom: 2},
+                                text: ""
+                                draw_text: {color: #aaccff, text_style: {font_size: 9.0}}
+                                draw_bg: { fn pixel(self) -> vec4 { return mix(#2a2a2a, #444444, self.hover); } }
+                            }
+                            recent_file_del_1 = <Button> {
+                                width: 20, height: 20,
+                                text: "×"
+                                draw_text: {color: #ff6666, text_style: {font_size: 11.0}}
+                                draw_bg: { fn pixel(self) -> vec4 { return mix(#2a2a2a, #553333, self.hover); } }
                             }
                         }
 
-                        recent_file_2 = <Button> {
+                        // Recent file 2
+                        recent_file_row_2 = <View> {
                             visible: false,
-                            width: Fill,
-                            height: Fit,
-                            padding: {left: 4, right: 4, top: 2, bottom: 2},
-                            text: ""
-                            draw_text: {color: #aaccff, text_style: {font_size: 9.0}}
-                            draw_bg: {
-                                fn pixel(self) -> vec4 {
-                                    return mix(#2a2a2a, #444444, self.hover);
-                                }
+                            width: Fill, height: Fit, flow: Right, spacing: 4, align: {y: 0.5}
+                            recent_file_2 = <Button> {
+                                width: Fill, height: Fit,
+                                padding: {left: 4, right: 4, top: 2, bottom: 2},
+                                text: ""
+                                draw_text: {color: #aaccff, text_style: {font_size: 9.0}}
+                                draw_bg: { fn pixel(self) -> vec4 { return mix(#2a2a2a, #444444, self.hover); } }
+                            }
+                            recent_file_del_2 = <Button> {
+                                width: 20, height: 20,
+                                text: "×"
+                                draw_text: {color: #ff6666, text_style: {font_size: 11.0}}
+                                draw_bg: { fn pixel(self) -> vec4 { return mix(#2a2a2a, #553333, self.hover); } }
                             }
                         }
 
-                        recent_file_3 = <Button> {
+                        // Recent file 3
+                        recent_file_row_3 = <View> {
                             visible: false,
-                            width: Fill,
-                            height: Fit,
-                            padding: {left: 4, right: 4, top: 2, bottom: 2},
-                            text: ""
-                            draw_text: {color: #aaccff, text_style: {font_size: 9.0}}
-                            draw_bg: {
-                                fn pixel(self) -> vec4 {
-                                    return mix(#2a2a2a, #444444, self.hover);
-                                }
+                            width: Fill, height: Fit, flow: Right, spacing: 4, align: {y: 0.5}
+                            recent_file_3 = <Button> {
+                                width: Fill, height: Fit,
+                                padding: {left: 4, right: 4, top: 2, bottom: 2},
+                                text: ""
+                                draw_text: {color: #aaccff, text_style: {font_size: 9.0}}
+                                draw_bg: { fn pixel(self) -> vec4 { return mix(#2a2a2a, #444444, self.hover); } }
+                            }
+                            recent_file_del_3 = <Button> {
+                                width: 20, height: 20,
+                                text: "×"
+                                draw_text: {color: #ff6666, text_style: {font_size: 11.0}}
+                                draw_bg: { fn pixel(self) -> vec4 { return mix(#2a2a2a, #553333, self.hover); } }
                             }
                         }
                     }
@@ -781,7 +796,7 @@ impl MatchEvent for App {
         if self.ui.button(id!(toggle_history_btn)).clicked(actions) {
             self.toggle_file_history(cx);
         }
-        // Recent file buttons
+        // Recent file buttons (select)
         if self.ui.button(id!(recent_file_1)).clicked(actions) {
             self.select_recent_file(cx, 0);
         }
@@ -790,6 +805,16 @@ impl MatchEvent for App {
         }
         if self.ui.button(id!(recent_file_3)).clicked(actions) {
             self.select_recent_file(cx, 2);
+        }
+        // Recent file delete buttons
+        if self.ui.button(id!(recent_file_del_1)).clicked(actions) {
+            self.remove_recent_file(cx, 0);
+        }
+        if self.ui.button(id!(recent_file_del_2)).clicked(actions) {
+            self.remove_recent_file(cx, 1);
+        }
+        if self.ui.button(id!(recent_file_del_3)).clicked(actions) {
+            self.remove_recent_file(cx, 2);
         }
         if self.ui.button(id!(fill_btn)).clicked(actions) {
             self.fill_proxy_fields(cx);

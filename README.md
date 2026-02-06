@@ -26,11 +26,19 @@
 
 ## Features
 
+### Static Configuration Mode (v0.1.2 - Current)
 - **Add proxy chains** - Prepend a SOCKS5 proxy to existing Clash proxies
 - **Filter proxies** - Select specific proxies by keywords
 - **Two input formats** - Support `user:pass@host:port` and `ip:port:user:pass`
 - **Preview changes** - See what will be modified before applying
 - **Cross-platform** - Windows, macOS, Linux
+
+### Dynamic Proxy Mode (v0.2.0 - Coming Soon)
+- **Local SOCKS5 server** - Run a local proxy server (127.0.0.1:10808)
+- **Auto-configuration** - Automatically monitor Clash config changes
+- **Health checking** - Check upstream proxy availability
+- **Multi-upstream** - Manage multiple upstream SOCKS5 proxies
+- **Auto-failover** - Switch to healthy proxies automatically
 
 ## Download
 

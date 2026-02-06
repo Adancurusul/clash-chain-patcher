@@ -302,6 +302,15 @@ impl ProxyState {
             .map(|bridge| bridge.get_recent_files())
             .unwrap_or_default()
     }
+
+    /// Remove a recently used configuration file by index
+    pub fn remove_recent_file(&mut self, index: usize) -> Result<(), String> {
+        self.config_bridge
+            .as_ref()
+            .ok_or("Config bridge not initialized")?
+            .remove_recent_file(index)
+            .map_err(|e| e.to_string())
+    }
 }
 
 #[cfg(test)]

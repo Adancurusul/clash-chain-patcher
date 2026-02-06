@@ -192,12 +192,12 @@ impl App {
 
     /// Refresh the file history dropdown display
     pub(crate) fn refresh_file_history_display(&mut self, cx: &mut Cx) {
-        // Update recent file buttons
+        // Update recent file rows (button + delete button)
         for i in 0..3 {
-            let (btn_id, visible, text) = match i {
-                0 => (id!(recent_file_1), !self.state.recent_files.is_empty(), self.state.recent_files.get(0)),
-                1 => (id!(recent_file_2), self.state.recent_files.len() > 1, self.state.recent_files.get(1)),
-                2 => (id!(recent_file_3), self.state.recent_files.len() > 2, self.state.recent_files.get(2)),
+            let (row_id, btn_id, visible, text) = match i {
+                0 => (id!(recent_file_row_1), id!(recent_file_1), !self.state.recent_files.is_empty(), self.state.recent_files.get(0)),
+                1 => (id!(recent_file_row_2), id!(recent_file_2), self.state.recent_files.len() > 1, self.state.recent_files.get(1)),
+                2 => (id!(recent_file_row_3), id!(recent_file_3), self.state.recent_files.len() > 2, self.state.recent_files.get(2)),
                 _ => continue,
             };
 
@@ -210,12 +210,30 @@ impl App {
                         .unwrap_or_else(|| path.clone());
 
                     self.ui.button(btn_id).set_text(cx, &filename);
-                    self.ui.button(btn_id).set_visible(cx, true);
+                    self.ui.view(row_id).set_visible(cx, true);
                 }
             } else {
-                self.ui.button(btn_id).set_visible(cx, false);
+                self.ui.view(row_id).set_visible(cx, false);
             }
         }
+    }
+
+    /// Remove a file from recent files list
+    pub(crate) fn remove_recent_file(&mut self, cx: &mut Cx, index: usize) {
+        if let Some(state) = &mut self.state.proxy_state {
+            if let Err(e) = state.remove_recent_file(index) {
+                eprintln!("Failed to remove recent file: {}", e);
+                self.add_log(cx, &format!("Failed to remove: {}", e));
+            } else {
+                // Update in-memory list from saved config
+                self.state.recent_files = state.get_recent_files();
+                eprintln!("DEBUG: Removed recent file at index {}, now have {} files", index, self.state.recent_files.len());
+            }
+        }
+
+        // Refresh display
+        self.refresh_file_history_display(cx);
+        self.ui.redraw(cx);
     }
 
     /// Select a file from recent files list

@@ -13,14 +13,6 @@ path = "src/lib.rs"
 name = "clash-chain-patcher"
 path = "src/main.rs"
 
-[[bin]]
-name = "clash-patcher-v2"
-path = "src/main_v2.rs"
-
-[[bin]]
-name = "clash-patcher-v3"
-path = "src/main_v3.rs"
-
 [dependencies]
 # Makepad GUI framework
 makepad-widgets = "1.0"
