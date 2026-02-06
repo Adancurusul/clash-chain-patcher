@@ -293,7 +293,8 @@ impl ClashConfigMerger {
 
             // Create relay proxy group
             // Relay format: [first_proxy, second_proxy, ...]
-            // Traffic flow: first_proxy -> second_proxy -> ... -> target
+            // Traffic flow: User -> Clash -> first_proxy -> second_proxy -> target
+            // We want: User -> Clash -> VPN node -> SOCKS5 proxy -> target
             let mut relay_group = Mapping::new();
             relay_group.insert(
                 Value::String("name".to_string()),
@@ -306,13 +307,13 @@ impl ClashConfigMerger {
             relay_group.insert(
                 Value::String("proxies".to_string()),
                 Value::Sequence(vec![
-                    Value::String(self.config.proxy_name.clone()), // First: local SOCKS5
-                    Value::String(proxy_name.clone()),            // Second: target proxy
+                    Value::String(proxy_name.clone()),            // First: VPN node (香港01 etc)
+                    Value::String(self.config.proxy_name.clone()), // Second: SOCKS5 proxy
                 ]),
             );
 
             groups_seq.push(Value::Mapping(relay_group));
-            info!("Created chain relay: {} -> {}", self.config.proxy_name, proxy_name);
+            info!("Created chain relay: {} -> {}", proxy_name, self.config.proxy_name);
             chains_created += 1;
         }
 
@@ -533,14 +534,14 @@ proxy-groups:
         assert!(group_names.contains(&"HK-01-Chain"));
         assert!(group_names.contains(&"JP-01-Chain"));
 
-        // Verify relay structure
+        // Verify relay structure: VPN node first, then SOCKS5 proxy
         for group in groups {
             let name = group["name"].as_str().unwrap_or("");
             if name == "HK-01-Chain" {
                 assert_eq!(group["type"].as_str().unwrap(), "relay");
                 let proxies = group["proxies"].as_sequence().unwrap();
-                assert_eq!(proxies[0].as_str().unwrap(), "Local-Chain-Proxy");
-                assert_eq!(proxies[1].as_str().unwrap(), "HK-01");
+                assert_eq!(proxies[0].as_str().unwrap(), "HK-01"); // First: VPN node
+                assert_eq!(proxies[1].as_str().unwrap(), "Local-Chain-Proxy"); // Second: SOCKS5
             }
         }
 
