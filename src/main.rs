@@ -14,6 +14,7 @@
 #![windows_subsystem = "windows"]
 
 mod app;
+mod app_impl;
 
 fn main() {
     app::app_main();
