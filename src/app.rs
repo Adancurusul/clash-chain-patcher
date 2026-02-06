@@ -909,7 +909,23 @@ impl AppMain for App {
     }
 }
 
+// ============================================================
+// App Implementation - Main Methods
+// ============================================================
+//
+// This implementation contains all app logic organized into
+// functional groups:
+// 1. File & Configuration Management
+// 2. Proxy Management
+// 3. Health Check Management
+// 4. Patch Operations (Apply)
+// 5. UI & Logging Helpers
+//
+// ============================================================
+
 impl App {
+    // ========== File & Configuration Management ==========
+
     fn select_config_file(&mut self, cx: &mut Cx) {
         use rfd::FileDialog;
         let file = FileDialog::new()
@@ -1122,6 +1138,8 @@ impl App {
         }
     }
 
+    // ========== Proxy Management ==========
+
     fn fill_proxy_fields(&mut self, cx: &mut Cx) {
         let proxy_string = self.ui.text_input(id!(proxy_string_input)).text();
         if proxy_string.is_empty() {
@@ -1172,6 +1190,8 @@ impl App {
         };
         PatchOptions { filter_keywords }
     }
+
+    // ========== Patch Operations (Apply) ==========
 
     fn preview_patch(&mut self, cx: &mut Cx) {
         self.clear_logs(cx);
@@ -1302,6 +1322,8 @@ impl App {
 
         self.ui.redraw(cx);
     }
+
+    // ========== UI & Logging Helpers ==========
 
     fn save_output(&mut self, cx: &mut Cx) {
         let output = match &self.state.output_content {
@@ -1506,6 +1528,8 @@ impl App {
         }
         self.ui.redraw(cx);
     }
+
+    // ========== Health Check Management ==========
 
     fn check_all_proxies(&mut self, cx: &mut Cx) {
         if self.state.checking {
