@@ -118,7 +118,8 @@ impl App {
                         }
 
                         details.push("".to_string());
-                        details.push(format!("Proxy added: {}", merge_result.proxy_added));
+                        details.push(format!("Local proxy added: {}", merge_result.proxy_added));
+                        details.push(format!("Chain relays created: {}", merge_result.chains_created));
                         details.push(format!("Groups updated: {}", merge_result.groups_updated));
 
                         if let Some(backup_path) = merge_result.backup_path {

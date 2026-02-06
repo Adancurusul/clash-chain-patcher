@@ -136,6 +136,7 @@ impl MergerBridgeBuilder {
             proxy_port: self.proxy_port,
             create_backup: self.create_backup,
             insert_at_beginning: self.insert_at_beginning,
+            chain_suffix: "-Chain".to_string(),
         };
 
         MergerBridge::with_config(config)
@@ -197,6 +198,7 @@ proxy-groups:
             proxy_port: 9999,
             create_backup: false,
             insert_at_beginning: false,
+            chain_suffix: "-Chain".to_string(),
         };
 
         let bridge = MergerBridge::with_config(config);
@@ -274,6 +276,7 @@ proxy-groups:
             proxy_port: 7777,
             create_backup: true,
             insert_at_beginning: true,
+            chain_suffix: "-Chain".to_string(),
         };
 
         bridge.update_config(new_config);

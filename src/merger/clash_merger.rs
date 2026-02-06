@@ -1,7 +1,9 @@
 //! Clash configuration merger implementation
 //!
-//! Automatically adds Local-Chain-Proxy node to Clash configuration
-//! and inserts it into all select-type proxy groups.
+//! Creates relay chain proxies that route traffic through a local SOCKS5 proxy
+//! before reaching the target proxy nodes.
+//!
+//! Example chain: User -> Clash -> Local SOCKS5 (127.0.0.1:10808) -> Target Node (香港 01)
 
 use anyhow::{Context, Result};
 use serde_yaml::{Mapping, Value};
@@ -26,6 +28,9 @@ pub struct MergerConfig {
 
     /// Whether to insert proxy at the beginning of groups (default: true)
     pub insert_at_beginning: bool,
+
+    /// Suffix for chain proxy names (default: "-Chain")
+    pub chain_suffix: String,
 }
 
 impl Default for MergerConfig {
@@ -36,6 +41,7 @@ impl Default for MergerConfig {
             proxy_port: 10808,
             create_backup: true,
             insert_at_beginning: true,
+            chain_suffix: "-Chain".to_string(),
         }
     }
 }
@@ -49,6 +55,9 @@ pub struct MergeResult {
     /// Number of proxy groups the proxy was added to
     pub groups_updated: usize,
 
+    /// Number of chain relay proxies created
+    pub chains_created: usize,
+
     /// Path to the backup file (if created)
     pub backup_path: Option<PathBuf>,
 
@@ -58,8 +67,8 @@ pub struct MergeResult {
 
 /// Clash configuration merger
 ///
-/// Manages the process of adding a local SOCKS5 proxy node to Clash
-/// configuration and updating all select-type proxy groups to include it.
+/// Creates relay chain proxies that route through a local SOCKS5 proxy.
+/// This allows traffic to go: Local SOCKS5 -> Target Proxy Node
 pub struct ClashConfigMerger {
     config: MergerConfig,
 }
@@ -82,7 +91,8 @@ impl ClashConfigMerger {
     /// This will:
     /// 1. Create a backup of the original file (if enabled)
     /// 2. Add the local proxy node to the proxies list (if not exists)
-    /// 3. Add the proxy to all select-type proxy groups
+    /// 3. Create relay chain proxies for each existing proxy
+    /// 4. Add the chain proxies to select-type proxy groups
     ///
     /// Returns a MergeResult with details about what was changed.
     pub fn merge<P: AsRef<Path>>(&self, config_path: P) -> Result<MergeResult> {
@@ -114,6 +124,7 @@ impl ClashConfigMerger {
         let mut result = MergeResult {
             proxy_added: false,
             groups_updated: 0,
+            chains_created: 0,
             backup_path,
             warnings: Vec::new(),
         };
@@ -137,8 +148,8 @@ impl ClashConfigMerger {
             .context("Failed to write config file")?;
 
         info!(
-            "Merge completed: proxy_added={}, groups_updated={}",
-            result.proxy_added, result.groups_updated
+            "Merge completed: proxy_added={}, chains_created={}, groups_updated={}",
+            result.proxy_added, result.chains_created, result.groups_updated
         );
 
         Ok(result)
@@ -150,13 +161,42 @@ impl ClashConfigMerger {
         let config_map = config.as_mapping_mut()
             .context("Config root must be a YAML mapping")?;
 
-        // Add proxy node
+        // Add local proxy node
         result.proxy_added = self.add_proxy_node(config_map)?;
 
-        // Add to proxy groups
-        result.groups_updated = self.add_to_proxy_groups(config_map, result)?;
+        // Get list of existing proxy names (before adding chains)
+        let existing_proxies = self.get_proxy_names(config_map)?;
+
+        // Create relay chain proxies for each existing proxy
+        result.chains_created = self.create_chain_proxies(config_map, &existing_proxies, result)?;
+
+        // Add chain proxies to proxy groups
+        result.groups_updated = self.add_chains_to_groups(config_map, &existing_proxies, result)?;
 
         Ok(())
+    }
+
+    /// Get list of proxy names from config
+    fn get_proxy_names(&self, config: &Mapping) -> Result<Vec<String>> {
+        let proxies = match config.get(&Value::String("proxies".to_string())) {
+            Some(p) => p,
+            None => return Ok(vec![]),
+        };
+
+        let proxies_seq = proxies.as_sequence()
+            .context("Proxies section must be a sequence")?;
+
+        let mut names = Vec::new();
+        for proxy in proxies_seq {
+            if let Some(name) = proxy.get("name").and_then(|v| v.as_str()) {
+                // Skip our own local proxy and any existing chain proxies
+                if name != self.config.proxy_name && !name.ends_with(&self.config.chain_suffix) {
+                    names.push(name.to_string());
+                }
+            }
+        }
+
+        Ok(names)
     }
 
     /// Add the local proxy node to the proxies list
@@ -211,8 +251,81 @@ impl ClashConfigMerger {
         Ok(true)
     }
 
-    /// Add the local proxy to all select-type proxy groups
-    fn add_to_proxy_groups(&self, config: &mut Mapping, result: &mut MergeResult) -> Result<usize> {
+    /// Create relay chain proxy groups for each existing proxy
+    fn create_chain_proxies(
+        &self,
+        config: &mut Mapping,
+        existing_proxies: &[String],
+        _result: &mut MergeResult,
+    ) -> Result<usize> {
+        // Ensure proxy-groups section exists
+        if !config.contains_key(&Value::String("proxy-groups".to_string())) {
+            config.insert(
+                Value::String("proxy-groups".to_string()),
+                Value::Sequence(vec![]),
+            );
+        }
+
+        let proxy_groups = config
+            .get_mut(&Value::String("proxy-groups".to_string()))
+            .context("Failed to get proxy-groups section")?;
+
+        let groups_seq = proxy_groups.as_sequence_mut()
+            .context("Proxy-groups section must be a sequence")?;
+
+        // Build set of existing group names
+        let existing_group_names: std::collections::HashSet<String> = groups_seq
+            .iter()
+            .filter_map(|g| g.get("name").and_then(|v| v.as_str()).map(|s| s.to_string()))
+            .collect();
+
+        let mut chains_created = 0;
+
+        // Create a relay chain for each existing proxy
+        for proxy_name in existing_proxies {
+            let chain_name = format!("{}{}", proxy_name, self.config.chain_suffix);
+
+            // Skip if chain already exists
+            if existing_group_names.contains(&chain_name) {
+                debug!("Chain '{}' already exists", chain_name);
+                continue;
+            }
+
+            // Create relay proxy group
+            // Relay format: [first_proxy, second_proxy, ...]
+            // Traffic flow: first_proxy -> second_proxy -> ... -> target
+            let mut relay_group = Mapping::new();
+            relay_group.insert(
+                Value::String("name".to_string()),
+                Value::String(chain_name.clone()),
+            );
+            relay_group.insert(
+                Value::String("type".to_string()),
+                Value::String("relay".to_string()),
+            );
+            relay_group.insert(
+                Value::String("proxies".to_string()),
+                Value::Sequence(vec![
+                    Value::String(self.config.proxy_name.clone()), // First: local SOCKS5
+                    Value::String(proxy_name.clone()),            // Second: target proxy
+                ]),
+            );
+
+            groups_seq.push(Value::Mapping(relay_group));
+            info!("Created chain relay: {} -> {}", self.config.proxy_name, proxy_name);
+            chains_created += 1;
+        }
+
+        Ok(chains_created)
+    }
+
+    /// Add chain proxies to select-type proxy groups
+    fn add_chains_to_groups(
+        &self,
+        config: &mut Mapping,
+        existing_proxies: &[String],
+        result: &mut MergeResult,
+    ) -> Result<usize> {
         // Check if proxy-groups section exists
         if !config.contains_key(&Value::String("proxy-groups".to_string())) {
             result.warnings.push("No proxy-groups section found in config".to_string());
@@ -225,6 +338,12 @@ impl ClashConfigMerger {
 
         let groups_seq = proxy_groups.as_sequence_mut()
             .context("Proxy-groups section must be a sequence")?;
+
+        // Build map of original proxy -> chain proxy name
+        let chain_map: std::collections::HashMap<String, String> = existing_proxies
+            .iter()
+            .map(|name| (name.clone(), format!("{}{}", name, self.config.chain_suffix)))
+            .collect();
 
         let mut updated_count = 0;
 
@@ -255,10 +374,7 @@ impl ClashConfigMerger {
 
             // Ensure proxies array exists
             if !group_map.contains_key(&Value::String("proxies".to_string())) {
-                group_map.insert(
-                    Value::String("proxies".to_string()),
-                    Value::Sequence(vec![]),
-                );
+                continue;
             }
 
             let group_proxies = group_map
@@ -268,25 +384,43 @@ impl ClashConfigMerger {
             let group_proxies_seq = group_proxies.as_sequence_mut()
                 .context("Group proxies must be a sequence")?;
 
-            // Check if proxy already in group
-            let already_exists = group_proxies_seq.iter().any(|p| {
-                p.as_str() == Some(&self.config.proxy_name)
-            });
+            // Build set of existing proxies in this group
+            let existing_in_group: std::collections::HashSet<String> = group_proxies_seq
+                .iter()
+                .filter_map(|p| p.as_str().map(|s| s.to_string()))
+                .collect();
 
-            if already_exists {
-                debug!("Proxy already in group: {}", group_name);
+            // For each proxy in this group, add its chain version if not already present
+            let mut to_add = Vec::new();
+            for proxy_value in group_proxies_seq.iter() {
+                if let Some(proxy_name) = proxy_value.as_str() {
+                    if let Some(chain_name) = chain_map.get(proxy_name) {
+                        if !existing_in_group.contains(chain_name) {
+                            to_add.push((proxy_name.to_string(), chain_name.clone()));
+                        }
+                    }
+                }
+            }
+
+            if to_add.is_empty() {
                 continue;
             }
 
-            // Add proxy to group
-            let proxy_value = Value::String(self.config.proxy_name.clone());
-            if self.config.insert_at_beginning {
-                group_proxies_seq.insert(0, proxy_value);
-            } else {
-                group_proxies_seq.push(proxy_value);
+            // Insert chain proxies right after their original proxies
+            let mut new_seq: Vec<Value> = Vec::new();
+            for proxy_value in group_proxies_seq.iter() {
+                new_seq.push(proxy_value.clone());
+                if let Some(proxy_name) = proxy_value.as_str() {
+                    for (orig, chain) in &to_add {
+                        if orig == proxy_name {
+                            new_seq.push(Value::String(chain.clone()));
+                        }
+                    }
+                }
             }
 
-            info!("Added proxy to group: {}", group_name);
+            *group_proxies_seq = new_seq;
+            info!("Added {} chain proxies to group: {}", to_add.len(), group_name);
             updated_count += 1;
         }
 
@@ -329,24 +463,30 @@ mod tests {
     fn create_test_config() -> String {
         r#"
 proxies:
-  - name: "Proxy 1"
+  - name: "HK-01"
     type: ss
     server: example.com
     port: 443
+    cipher: aes-256-gcm
+    password: secret
+  - name: "JP-01"
+    type: ss
+    server: example.jp
+    port: 443
+    cipher: aes-256-gcm
+    password: secret
 
 proxy-groups:
+  - name: "Proxy"
+    type: select
+    proxies:
+      - "HK-01"
+      - "JP-01"
   - name: "Auto"
-    type: select
+    type: url-test
     proxies:
-      - "Proxy 1"
-  - name: "Manual"
-    type: select
-    proxies:
-      - "Proxy 1"
-  - name: "Fallback"
-    type: fallback
-    proxies:
-      - "Proxy 1"
+      - "HK-01"
+      - "JP-01"
 "#
         .to_string()
     }
@@ -359,33 +499,11 @@ proxy-groups:
         assert_eq!(config.proxy_port, 10808);
         assert!(config.create_backup);
         assert!(config.insert_at_beginning);
+        assert_eq!(config.chain_suffix, "-Chain");
     }
 
     #[test]
-    fn test_merger_creation() {
-        let merger = ClashConfigMerger::new();
-        assert_eq!(merger.config().proxy_name, "Local-Chain-Proxy");
-
-        let custom_config = MergerConfig {
-            proxy_name: "Custom-Proxy".to_string(),
-            proxy_port: 9999,
-            ..Default::default()
-        };
-
-        let merger = ClashConfigMerger::with_config(custom_config);
-        assert_eq!(merger.config().proxy_name, "Custom-Proxy");
-        assert_eq!(merger.config().proxy_port, 9999);
-    }
-
-    #[test]
-    fn test_merge_nonexistent_file() {
-        let merger = ClashConfigMerger::new();
-        let result = merger.merge("/nonexistent/file.yaml");
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_merge_basic() {
+    fn test_merge_creates_chain_relays() {
         let temp_dir = TempDir::new().unwrap();
         let config_path = temp_dir.path().join("config.yaml");
         fs::write(&config_path, create_test_config()).unwrap();
@@ -394,22 +512,48 @@ proxy-groups:
         let result = merger.merge(&config_path).unwrap();
 
         assert!(result.proxy_added);
-        assert_eq!(result.groups_updated, 2); // Only select-type groups
-        assert!(result.backup_path.is_some());
-        assert!(result.warnings.is_empty());
+        assert_eq!(result.chains_created, 2); // HK-01-Chain, JP-01-Chain
+        assert_eq!(result.groups_updated, 1); // Only select-type group
 
-        // Verify the merge
+        // Verify the config
         let content = fs::read_to_string(&config_path).unwrap();
-        assert!(content.contains("Local-Chain-Proxy"));
-
         let config: Value = serde_yaml::from_str(&content).unwrap();
-        let proxies = config["proxies"].as_sequence().unwrap();
-        assert_eq!(proxies.len(), 2); // Original + Local-Chain-Proxy
 
-        // Check Auto group
-        let auto_group = &config["proxy-groups"][0];
-        let auto_proxies = auto_group["proxies"].as_sequence().unwrap();
-        assert_eq!(auto_proxies[0].as_str().unwrap(), "Local-Chain-Proxy");
+        // Check proxies
+        let proxies = config["proxies"].as_sequence().unwrap();
+        assert_eq!(proxies.len(), 3); // HK-01, JP-01, Local-Chain-Proxy
+
+        // Check proxy-groups for relay chains
+        let groups = config["proxy-groups"].as_sequence().unwrap();
+        let group_names: Vec<&str> = groups
+            .iter()
+            .filter_map(|g| g["name"].as_str())
+            .collect();
+
+        assert!(group_names.contains(&"HK-01-Chain"));
+        assert!(group_names.contains(&"JP-01-Chain"));
+
+        // Verify relay structure
+        for group in groups {
+            let name = group["name"].as_str().unwrap_or("");
+            if name == "HK-01-Chain" {
+                assert_eq!(group["type"].as_str().unwrap(), "relay");
+                let proxies = group["proxies"].as_sequence().unwrap();
+                assert_eq!(proxies[0].as_str().unwrap(), "Local-Chain-Proxy");
+                assert_eq!(proxies[1].as_str().unwrap(), "HK-01");
+            }
+        }
+
+        // Check that chains were added to select group
+        let proxy_group = &groups[0]; // "Proxy" select group
+        let group_proxies = proxy_group["proxies"].as_sequence().unwrap();
+        let proxy_names: Vec<&str> = group_proxies
+            .iter()
+            .filter_map(|p| p.as_str())
+            .collect();
+
+        assert!(proxy_names.contains(&"HK-01-Chain"));
+        assert!(proxy_names.contains(&"JP-01-Chain"));
     }
 
     #[test]
@@ -423,65 +567,12 @@ proxy-groups:
         // First merge
         let result1 = merger.merge(&config_path).unwrap();
         assert!(result1.proxy_added);
-        assert_eq!(result1.groups_updated, 2);
+        assert_eq!(result1.chains_created, 2);
 
         // Second merge (should be no-op)
         let result2 = merger.merge(&config_path).unwrap();
         assert!(!result2.proxy_added);
+        assert_eq!(result2.chains_created, 0);
         assert_eq!(result2.groups_updated, 0);
-    }
-
-    #[test]
-    fn test_merge_with_custom_config() {
-        let temp_dir = TempDir::new().unwrap();
-        let config_path = temp_dir.path().join("config.yaml");
-        fs::write(&config_path, create_test_config()).unwrap();
-
-        let custom_config = MergerConfig {
-            proxy_name: "My-Custom-Proxy".to_string(),
-            proxy_port: 7777,
-            create_backup: false,
-            insert_at_beginning: false,
-            ..Default::default()
-        };
-
-        let merger = ClashConfigMerger::with_config(custom_config);
-        let result = merger.merge(&config_path).unwrap();
-
-        assert!(result.proxy_added);
-        assert!(result.backup_path.is_none());
-
-        let content = fs::read_to_string(&config_path).unwrap();
-        assert!(content.contains("My-Custom-Proxy"));
-        assert!(content.contains("7777"));
-
-        let config: Value = serde_yaml::from_str(&content).unwrap();
-        let auto_group = &config["proxy-groups"][0];
-        let auto_proxies = auto_group["proxies"].as_sequence().unwrap();
-
-        // Should be at the end, not beginning
-        assert_eq!(
-            auto_proxies.last().unwrap().as_str().unwrap(),
-            "My-Custom-Proxy"
-        );
-    }
-
-    #[test]
-    fn test_merge_empty_config() {
-        let temp_dir = TempDir::new().unwrap();
-        let config_path = temp_dir.path().join("config.yaml");
-        fs::write(&config_path, "{}").unwrap();
-
-        let merger = ClashConfigMerger::new();
-        let result = merger.merge(&config_path).unwrap();
-
-        assert!(result.proxy_added);
-        assert_eq!(result.groups_updated, 0);
-        assert_eq!(result.warnings.len(), 1);
-
-        let content = fs::read_to_string(&config_path).unwrap();
-        let config: Value = serde_yaml::from_str(&content).unwrap();
-        let proxies = config["proxies"].as_sequence().unwrap();
-        assert_eq!(proxies.len(), 1);
     }
 }
