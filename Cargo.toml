@@ -9,6 +9,18 @@ description = "A GUI tool to add SOCKS5 proxy chains to Clash configurations"
 name = "clash_chain_patcher"
 path = "src/lib.rs"
 
+[[bin]]
+name = "clash-chain-patcher"
+path = "src/main.rs"
+
+[[bin]]
+name = "clash-patcher-v2"
+path = "src/main_v2.rs"
+
+[[bin]]
+name = "clash-patcher-v3"
+path = "src/main_v3.rs"
+
 [dependencies]
 # Makepad GUI framework
 makepad-widgets = "1.0"
@@ -40,8 +52,27 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Configuration directory
 dirs = "5.0"
 
+# JSON serialization (for config management)
+serde_json = "1.0"
+
+# Time handling (for health check timestamps)
+chrono = { version = "0.4", features = ["serde"] }
+
+# UUID generation (for proxy IDs)
+uuid = { version = "1.10", features = ["v4", "serde"] }
+
 # Command-line parsing (for examples)
 clap = { version = "4.5", features = ["derive"] }
+
+# HTTP client (for health checks)
+reqwest = { version = "0.12", features = ["rustls-tls"] }
+
+# File system watching (for config monitoring)
+notify = "7.0"
+
+[dev-dependencies]
+# Temporary files for testing
+tempfile = "3.13"
 
 [target.'cfg(windows)'.build-dependencies]
 # winresource is a maintained fork of winres that works with Rust 1.61+
