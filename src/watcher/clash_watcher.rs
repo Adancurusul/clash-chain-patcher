@@ -6,6 +6,8 @@ use notify::{
     Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher,
 };
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::time::{sleep, Instant};
@@ -86,14 +88,15 @@ impl ClashConfigWatcher {
     /// Start watching the configuration file
     ///
     /// Returns a channel receiver that will receive WatcherEvents.
-    /// The watcher runs in a background task and can be stopped by dropping the receiver.
-    pub async fn start(self) -> Result<mpsc::Receiver<WatcherEvent>> {
+    /// The `stop_signal` can be set to `true` to stop the watcher thread and debouncer task.
+    pub async fn start(self, stop_signal: Arc<AtomicBool>) -> Result<mpsc::Receiver<WatcherEvent>> {
         let (event_tx, event_rx) = mpsc::channel(100);
         let (notify_tx, mut notify_rx) = mpsc::channel(100);
 
         let watch_path = self.watch_path.clone();
         let watch_path_clone = watch_path.clone();
         let debounce_delay = self.config.debounce_delay;
+        let thread_stop = stop_signal.clone();
 
         // Spawn watcher thread (notify requires sync operations)
         std::thread::spawn(move || {
@@ -135,18 +138,27 @@ impl ClashConfigWatcher {
 
             info!("File watcher started for: {}", watch_path_clone.display());
 
-            // Keep the watcher alive
-            loop {
-                std::thread::sleep(Duration::from_secs(1));
+            // Keep the watcher alive until stop signal is set
+            while !thread_stop.load(Ordering::Relaxed) {
+                std::thread::sleep(Duration::from_millis(200));
             }
+
+            // Watcher is dropped here, releasing OS resources
+            info!("File watcher thread stopped for: {}", watch_path_clone.display());
         });
 
         // Spawn debouncer task
+        let debouncer_stop = stop_signal.clone();
         tokio::spawn(async move {
             let mut last_event_time: Option<Instant> = None;
             let mut pending_event: Option<WatcherEvent> = None;
 
             loop {
+                // Check stop signal
+                if debouncer_stop.load(Ordering::Relaxed) {
+                    break;
+                }
+
                 tokio::select! {
                     // Receive events from notify
                     Some(result) = notify_rx.recv() => {
@@ -207,7 +219,7 @@ impl ClashConfigWatcher {
                 }
             }
 
-            info!("Watcher task stopped");
+            info!("Watcher debouncer task stopped");
         });
 
         Ok(event_rx)
@@ -227,6 +239,7 @@ impl ClashConfigWatcher {
 /// Helper to start watching with a callback function
 pub async fn watch_clash_config<F, Fut>(
     config_path: impl AsRef<Path>,
+    stop_signal: Arc<AtomicBool>,
     mut callback: F,
 ) -> Result<mpsc::Receiver<WatcherEvent>>
 where
@@ -234,7 +247,7 @@ where
     Fut: std::future::Future<Output = ()> + Send,
 {
     let watcher = ClashConfigWatcher::new(config_path)?;
-    let mut rx = watcher.start().await?;
+    let mut rx = watcher.start(stop_signal).await?;
 
     tokio::spawn(async move {
         while let Some(event) = rx.recv().await {
@@ -306,8 +319,9 @@ mod tests {
         let config_path = temp_dir.path().join("config.yaml");
         fs::write(&config_path, "initial: data").unwrap();
 
+        let stop_signal = Arc::new(AtomicBool::new(false));
         let watcher = ClashConfigWatcher::new(&config_path).unwrap();
-        let mut rx = watcher.start().await.unwrap();
+        let mut rx = watcher.start(stop_signal.clone()).await.unwrap();
 
         // Wait a bit for the watcher to initialize
         tokio::time::sleep(Duration::from_millis(500)).await;
@@ -351,8 +365,9 @@ mod tests {
             continuous: true,
         };
 
+        let stop_signal = Arc::new(AtomicBool::new(false));
         let watcher = ClashConfigWatcher::with_config(&config_path, config).unwrap();
-        let mut rx = watcher.start().await.unwrap();
+        let mut rx = watcher.start(stop_signal.clone()).await.unwrap();
 
         // Wait a bit for the watcher to initialize
         tokio::time::sleep(Duration::from_millis(500)).await;

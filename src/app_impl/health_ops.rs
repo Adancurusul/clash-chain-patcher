@@ -7,6 +7,8 @@
 //! - Background health check updates
 
 use makepad_widgets::*;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use crate::app::App;
 
 impl App {
@@ -102,10 +104,12 @@ impl App {
         self.state.auto_check_interval = interval_minutes;
 
         if self.state.auto_checking {
-            // Stop auto checking
+            // Stop auto checking — signal the thread to exit immediately
+            if let Some(signal) = self.state.auto_check_stop.take() {
+                signal.store(true, Ordering::Relaxed);
+            }
             self.state.auto_checking = false;
             self.state.health_check_rx = None;
-            // Task will be dropped and cancelled
 
             self.ui.button(id!(auto_check_btn)).set_text(cx, "Auto: OFF");
             self.clear_logs(cx);
@@ -152,20 +156,35 @@ impl App {
                 let interval_secs = interval_minutes * 60;
                 let proxy_count = proxy_list.len();
 
-                // Spawn background task
+                // Create stop signal for this thread
+                let stop_signal = Arc::new(AtomicBool::new(false));
+                self.state.auto_check_stop = Some(stop_signal.clone());
+
+                // Spawn background task with cancellation support
                 let handle = std::thread::spawn(move || {
                     use clash_chain_patcher::health::ProxyValidator;
-                    use std::thread;
-                    use std::time::Duration;
+                    use std::time::{Duration, Instant};
 
                     let validator = ProxyValidator::new(10);
 
                     eprintln!("DEBUG: Auto check background thread started, checking every {} minutes", interval_minutes);
 
                     loop {
+                        // Check stop signal before starting a cycle
+                        if stop_signal.load(Ordering::Relaxed) {
+                            eprintln!("DEBUG: Auto check thread received stop signal");
+                            return;
+                        }
+
                         eprintln!("DEBUG: Starting auto health check cycle");
 
                         for (proxy_id, host, port, username, password) in &proxy_list {
+                            // Check stop signal between each proxy check
+                            if stop_signal.load(Ordering::Relaxed) {
+                                eprintln!("DEBUG: Auto check cancelled mid-cycle");
+                                return;
+                            }
+
                             let result = validator.validate(
                                 host,
                                 *port,
@@ -182,8 +201,15 @@ impl App {
 
                         eprintln!("DEBUG: Auto check cycle completed, sleeping for {} seconds", interval_secs);
 
-                        // Sleep until next check
-                        thread::sleep(Duration::from_secs(interval_secs));
+                        // Interruptible sleep: check stop signal every 500ms
+                        let sleep_end = Instant::now() + Duration::from_secs(interval_secs);
+                        while Instant::now() < sleep_end {
+                            if stop_signal.load(Ordering::Relaxed) {
+                                eprintln!("DEBUG: Auto check cancelled during sleep");
+                                return;
+                            }
+                            std::thread::sleep(Duration::from_millis(500));
+                        }
                     }
                 });
 
@@ -197,8 +223,7 @@ impl App {
 
                 eprintln!("DEBUG: Auto check started with {} minute interval", interval_minutes);
 
-                // Note: handle is dropped but thread continues running
-                // It will stop when channel is closed
+                // Thread will stop when stop_signal is set or channel is closed
                 drop(handle);
             } else {
                 self.clear_logs(cx);
