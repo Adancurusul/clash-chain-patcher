@@ -6,27 +6,39 @@
 //! - Output saving
 
 use makepad_widgets::*;
-use crate::app::App;
+use crate::app::{App, MAX_LOG_LINES};
 
 impl App {
-    /// Add a log message and update display
+    /// Add a log message and update display.
+    /// Automatically trims old entries when exceeding MAX_LOG_LINES.
     pub(crate) fn add_log(&mut self, cx: &mut Cx, message: &str) {
-        self.state.logs.push(message.to_string());
-        // Auto-update display
-        let log_text = self.state.logs.join("\n");
+        self.state.logs.push_back(message.to_string());
+
+        // Trim old logs to prevent unbounded growth
+        while self.state.logs.len() > MAX_LOG_LINES {
+            self.state.logs.pop_front();
+        }
+
+        // Build display string from VecDeque
+        let log_text: String = self.state.logs.iter()
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("\n");
         self.ui.label(id!(log_text)).set_text(cx, &log_text);
     }
 
     /// Clear all logs and update display
     pub(crate) fn clear_logs(&mut self, cx: &mut Cx) {
         self.state.logs.clear();
-        // Auto-update display
         self.ui.label(id!(log_text)).set_text(cx, "");
     }
 
     /// Update the log display from the logs buffer (for manual refresh)
     pub(crate) fn update_log_display(&mut self, cx: &mut Cx) {
-        let log_text = self.state.logs.join("\n");
+        let log_text: String = self.state.logs.iter()
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("\n");
         self.ui.label(id!(log_text)).set_text(cx, &log_text);
     }
 

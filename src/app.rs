@@ -15,6 +15,9 @@
 
 use makepad_widgets::*;
 use clash_chain_patcher::state::ProxyState;
+use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 // impl App blocks are in src/app_impl/ module (declared in main.rs)
 
@@ -709,12 +712,15 @@ pub struct ApplyResult {
     pub details: Vec<String>,
 }
 
+/// Maximum number of log lines to retain
+pub const MAX_LOG_LINES: usize = 200;
+
 /// Application state
 pub struct AppState {
     pub config_content: Option<String>,
     pub config_filename: Option<String>,
     pub output_content: Option<String>,
-    pub logs: Vec<String>,
+    pub logs: VecDeque<String>,
     pub proxy_state: Option<ProxyState>,
     #[allow(dead_code)]
     pub checking: bool,
@@ -728,6 +734,8 @@ pub struct AppState {
     pub health_check_rx: Option<std::sync::mpsc::Receiver<(String, clash_chain_patcher::health::ProxyValidationResult)>>,
     #[allow(dead_code)]
     pub auto_check_handle: Option<tokio::task::JoinHandle<()>>,
+    /// Stop signal for auto health check thread — set to true to cancel
+    pub auto_check_stop: Option<Arc<AtomicBool>>,
     pub watcher_rx: Option<tokio::sync::mpsc::UnboundedReceiver<clash_chain_patcher::watcher::WatcherEvent>>,
     pub watcher_bridge: Option<clash_chain_patcher::bridge::WatcherBridge>,
     pub apply_result_rx: Option<std::sync::mpsc::Receiver<ApplyResult>>,
@@ -740,7 +748,7 @@ impl Default for AppState {
             config_content: None,
             config_filename: None,
             output_content: None,
-            logs: Vec::new(),
+            logs: VecDeque::new(),
             proxy_state: None,
             checking: false,
             selected_proxy_index: None,
@@ -751,11 +759,26 @@ impl Default for AppState {
             auto_check_interval: 5,
             health_check_rx: None,
             auto_check_handle: None,
+            auto_check_stop: None,
             watcher_rx: None,
             watcher_bridge: None,
             apply_result_rx: None,
             is_applying: false,
         }
+    }
+}
+
+impl Drop for AppState {
+    fn drop(&mut self) {
+        // Stop auto health check thread
+        if let Some(signal) = &self.auto_check_stop {
+            signal.store(true, Ordering::Relaxed);
+        }
+        // Stop file watcher (WatcherBridge has its own Drop, but be explicit)
+        if let Some(mut bridge) = self.watcher_bridge.take() {
+            bridge.stop();
+        }
+        eprintln!("DEBUG: AppState cleaned up");
     }
 }
 
