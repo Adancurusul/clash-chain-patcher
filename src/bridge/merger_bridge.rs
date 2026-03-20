@@ -34,7 +34,7 @@ impl MergerBridge {
     pub fn merge(&self, config_path: impl AsRef<Path>) -> BridgeResult<MergeResult> {
         self.merger
             .merge(config_path.as_ref())
-            .map_err(|e| BridgeError::Merger(e.to_string()))
+            .map_err(|e| BridgeError::Merger(format!("{:#}", e)))
     }
 
     /// Validate if the configuration file is valid

@@ -111,6 +111,17 @@ impl ClashConfigMerger {
             anyhow::bail!("Config file does not exist: {}", config_path.display());
         }
 
+        // Check file is writable
+        if let Ok(metadata) = fs::metadata(config_path) {
+            if metadata.permissions().readonly() {
+                anyhow::bail!(
+                    "Config file is read-only: {}. Please run: chmod u+w \"{}\"",
+                    config_path.display(),
+                    config_path.display()
+                );
+            }
+        }
+
         info!("Starting Clash config merge for: {}", config_path.display());
 
         // Create backup
@@ -124,10 +135,10 @@ impl ClashConfigMerger {
 
         // Read and parse config
         let content = fs::read_to_string(config_path)
-            .context("Failed to read config file")?;
+            .with_context(|| format!("Failed to read config file: {}", config_path.display()))?;
 
         let mut config: Value = serde_yaml::from_str(&content)
-            .context("Failed to parse YAML config")?;
+            .with_context(|| format!("YAML parse error in: {}", config_path.display()))?;
 
         let mut result = MergeResult {
             proxy_added: false,
@@ -152,8 +163,11 @@ impl ClashConfigMerger {
         let yaml_string = serde_yaml::to_string(&config)
             .context("Failed to serialize config")?;
 
-        fs::write(config_path, yaml_string)
-            .context("Failed to write config file")?;
+        fs::write(config_path, &yaml_string)
+            .with_context(|| format!(
+                "Failed to write config file: {}. Check file permissions (chmod u+w)",
+                config_path.display()
+            ))?;
 
         info!(
             "Merge completed: proxy_added={}, chains_created={}, groups_updated={}",
