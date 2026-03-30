@@ -5,15 +5,21 @@
 </p>
 
 <p align="center">
-  A GUI tool to add SOCKS5 proxy chains to Clash configurations
+  A GUI & CLI tool to add SOCKS5 proxy chains to Clash configurations
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/version-0.3.0-blue" alt="Version">
+  <img src="https://img.shields.io/badge/rust-1.70%2B-orange" alt="Rust">
+  <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
 </p>
 
 <p align="center">
   <a href="#features">Features</a> •
   <a href="#download">Download</a> •
-  <a href="#usage">Usage</a> •
-  <a href="#building">Building</a> •
-  <a href="README_CN.md">中文文档</a>
+  <a href="#gui-usage">GUI</a> •
+  <a href="#cli-usage">CLI</a> •
+  <a href="#building">Building</a>
 </p>
 
 ---
@@ -26,28 +32,23 @@
 
 ## Features
 
-- **Dual Chain Groups** - Creates both auto-select (Chain-Auto) and manual-select (Chain-Selector) groups
-- **Latency Testing** - Chain-Auto uses url-test for automatic fastest node selection
-- **Smart Detection** - Auto-detects main entry group from MATCH rule
-- **Proxy Pool** - Manage multiple SOCKS5 upstream proxies
+- **Dual Chain Groups** - Creates both Chain-Auto (fastest auto-select) and Chain-Selector (manual) groups
+- **Rules Rewrite** - Selectively redirect Clash rules to use chain proxies (Chain-Selector / Chain-Auto)
+- **Proxy Pool** - Manage multiple SOCKS5 upstream proxies with health checking
 - **File Watching** - Auto re-apply when Clash config changes externally
-- **Recent Files** - Quick access to recently used config files (with delete)
+- **CLI Support** - Full command-line interface (`ccp`) for scripting and automation
 - **Cross-platform** - Windows, macOS, Linux
 
 ## How It Works
 
-The tool creates relay proxy chains:
+```
+Traffic flow: You → Clash → VPN Node → Your SOCKS5 Proxy → Internet
+```
 
 1. **Add your SOCKS5 proxy** to the Proxy Pool
 2. **Select Clash config** file
-3. **Click Apply** - The tool will:
-   - Create a `Local-Chain-Proxy` SOCKS5 node
-   - Create `-Chain` relay for each existing proxy (e.g., `Tokyo-01-Chain`)
-   - Create **Chain-Selector** group (select type, for manual selection)
-   - Create **Chain-Auto** group (url-test type, for auto fastest selection)
-   - Add both groups to the main entry group (detected from MATCH rule)
-
-Traffic flow: `VPN Node → Your SOCKS5 Proxy → Internet`
+3. **Configure Rules Rewrite** - Choose which rule groups to redirect through chain proxies
+4. **Click Apply** - Creates chain relays, selector groups, and rewrites rules
 
 ## Download
 
@@ -56,57 +57,97 @@ Download the latest release from [Releases](../../releases):
 | Platform | File | Note |
 |----------|------|------|
 | Windows | `*-setup.exe` | NSIS Installer (Recommended) |
-| Windows | `*-portable.zip` | Portable version (unzip and run) |
-| macOS | `Clash-Chain-Patcher-macos.dmg` | Drag to Applications |
-| macOS | `Clash-Chain-Patcher-macos.zip` | Contains .app bundle |
-| Linux | `clash-chain-patcher-linux` | Make executable with `chmod +x` |
+| Windows | `*-portable.zip` | Portable version |
+| macOS | `*.dmg` | Drag to Applications |
+| Linux | `clash-chain-patcher-linux` | `chmod +x` and run |
 
 ### macOS: First Launch
 
-Since the app is not signed with an Apple Developer certificate, macOS Gatekeeper will block it.
-
-**Solution: Run in Terminal**
 ```bash
 xattr -cr /Applications/Clash\ Chain\ Patcher.app
 ```
 
-### Linux: First Launch
-```bash
-chmod +x clash-chain-patcher-linux
-./clash-chain-patcher-linux
-```
-
-## Usage
+## GUI Usage
 
 ### Step 1: Add SOCKS5 Proxy
 
-1. Fill in **Host**, **Port**, **User**, **Pass** fields
-2. Click **+ Add** to add to Proxy Pool
-3. Ensure the proxy shows ✓ (enabled)
+Fill in **Host**, **Port**, **User**, **Pass**, click **+ Add**.
 
 ### Step 2: Select Clash Config
 
-1. Click **Select** to choose your Clash YAML config file
-2. Recent files are saved for quick access (click ▼ to show)
+Click **Select** to choose your Clash YAML config file.
 
-### Step 3: Apply
+### Step 3: Rules Rewrite (Optional)
 
-1. Click **Apply** button
-2. Wait for completion message
-3. In Clash, refresh configuration
+After loading a config, the **Rules Rewrite** panel auto-detects all proxy groups referenced in rules:
 
-### Step 4: Use Chain Nodes
+- Click the **check (✓)** to enable/disable a group for rewriting
+- Click the **target button** to cycle through: `Keep` → `Chain-Selector` → `Chain-Auto`
+- Non-DIRECT/REJECT groups are auto-checked with Chain-Selector by default
 
-After applying, you'll see two new groups in Clash sidebar (at the top):
+### Step 4: Apply
 
-- **Chain-Selector** - Manual selection of chain nodes
-- **Chain-Auto** - Auto-select fastest chain node (with latency display)
+Click **Apply**. The tool will:
+- Create relay chains for each proxy node
+- Create Chain-Selector and Chain-Auto groups
+- Rewrite checked rules to point to the selected chain group
 
-Select either group, or select them from your main proxy group.
+## CLI Usage
 
-### File Watch (Optional)
+The CLI binary is called `ccp` (Clash Chain Patcher).
 
-Enable **Watch** to auto re-apply when Clash config changes (e.g., subscription updates).
+### Show config info
+
+```bash
+ccp info config.yaml
+```
+
+Output:
+```
+Rules: 3 groups, 630 total rules
+Group                                       Rules
+--------------------------------------------------
+Proxy                                         371
+DIRECT                                        233
+REJECT                                         26
+
+Proxy nodes: 45
+Proxy groups: 5
+```
+
+### Apply chain patch + rewrite rules
+
+```bash
+# Auto-detect main group and replace with Chain-Selector
+ccp apply config.yaml -p host:port:user:pass -r auto
+
+# Specify target explicitly
+ccp apply config.yaml -p host:port -r "Proxy=Chain-Selector"
+
+# Multiple rewrites
+ccp apply config.yaml -p user:pass@host:port \
+  -r "Proxy=Chain-Selector" \
+  -r "Streaming=Chain-Auto"
+```
+
+### Rewrite rules only (no chain creation)
+
+```bash
+ccp rules config.yaml -r auto
+ccp rules config.yaml -r "Proxy=Chain-Auto"
+```
+
+### Options
+
+```
+ccp apply [OPTIONS] --proxy <PROXY> <CONFIG>
+
+Options:
+  -p, --proxy <PROXY>      SOCKS5 proxy string
+  -r, --rewrite <REWRITE>  Rule rewrite (repeatable), or "auto"
+      --no-backup          Skip creating backup
+      --suffix <SUFFIX>    Chain suffix [default: -Chain]
+```
 
 ## Example
 
@@ -123,28 +164,21 @@ proxy-groups:
     proxies: ["Tokyo-01"]
 
 rules:
+  - DOMAIN,google.com,Proxy
   - MATCH,Proxy
 ```
 
-After Apply:
+After `ccp apply config.yaml -p 1.2.3.4:1080 -r auto`:
 ```yaml
 proxies:
   - name: "Local-Chain-Proxy"
     type: socks5
-    server: your-socks5-host
+    server: 1.2.3.4
     port: 1080
-    username: user
-    password: pass
 
   - name: "Tokyo-01"
     type: vmess
     server: example.com
-
-  - name: "Tokyo-01-Chain"
-    type: relay
-    proxies:
-      - "Tokyo-01"
-      - "Local-Chain-Proxy"
 
 proxy-groups:
   - name: "Chain-Selector"
@@ -160,6 +194,14 @@ proxy-groups:
   - name: "Proxy"
     type: select
     proxies: ["Chain-Selector", "Chain-Auto", "Tokyo-01"]
+
+  - name: "Tokyo-01-Chain"
+    type: relay
+    proxies: ["Tokyo-01", "Local-Chain-Proxy"]
+
+rules:
+  - DOMAIN,google.com,Chain-Selector    # was: Proxy
+  - MATCH,Chain-Selector                # was: Proxy
 ```
 
 ## Building
@@ -172,12 +214,18 @@ proxy-groups:
 ```bash
 git clone https://github.com/user/clash-chain-patcher.git
 cd clash-chain-patcher
-cargo build --release
+
+# Build GUI
+cargo build --release --bin clash-chain-patcher
+
+# Build CLI
+cargo build --release --bin ccp
 ```
 
 ## Tech Stack
 
-- **GUI**: [Makepad](https://github.com/makepad/makepad) - Rust UI framework
+- **GUI**: [Makepad](https://github.com/makepad/makepad) - Rust native UI framework
+- **CLI**: [clap](https://github.com/clap-rs/clap) - Command-line argument parser
 - **YAML**: serde_yaml
 - **File dialogs**: rfd
 
@@ -185,9 +233,9 @@ cargo build --release
 
 This software is provided for **educational and research purposes only**.
 
-- This tool is intended solely for learning network technologies and personal research
-- Users are responsible for ensuring their use complies with all applicable local laws and regulations
-- The author assumes no liability for any misuse, damage, or legal consequences arising from the use of this software
+- Intended solely for learning network technologies and personal research
+- Users are responsible for ensuring compliance with applicable laws
+- The author assumes no liability for misuse or consequences
 
 **Use at your own risk.**
 

@@ -130,10 +130,19 @@ impl App {
         self.set_status(cx, "Applying...");
         self.update_log_display(cx);
 
+        // Build rule replacements from UI state
+        let rule_replacements = self.build_rule_replacements();
+        let has_rule_rewrites = !rule_replacements.is_empty();
+
         // Clone data for thread
         let proxy_host_clone = proxy_host.clone();
         let proxy_username_clone = proxy_username.clone().filter(|s| !s.is_empty());
         let proxy_password_clone = proxy_password.clone().filter(|s| !s.is_empty());
+
+        if has_rule_rewrites {
+            self.add_log(cx, &format!("  Rules rewrite: {} groups to replace", rule_replacements.len()));
+            self.update_log_display(cx);
+        }
 
         // Spawn background thread
         std::thread::spawn(move || {
@@ -170,6 +179,31 @@ impl App {
 
                         if let Some(backup_path) = merge_result.backup_path {
                             details.push(format!("Backup: {}", backup_path.display()));
+                        }
+
+                        // Apply rules rewrite if any
+                        if !rule_replacements.is_empty() {
+                            match std::fs::read_to_string(&config_path) {
+                                Ok(content) => {
+                                    match clash_chain_patcher::patcher::rewrite_rules(&content, &rule_replacements) {
+                                        Ok((output, count)) => {
+                                            if count > 0 {
+                                                if let Err(e) = std::fs::write(&config_path, output) {
+                                                    details.push(format!("✗ Rules rewrite write failed: {}", e));
+                                                } else {
+                                                    details.push(format!("Rules rewritten: {} rules updated", count));
+                                                }
+                                            }
+                                        }
+                                        Err(e) => {
+                                            details.push(format!("✗ Rules rewrite failed: {}", e));
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    details.push(format!("✗ Rules rewrite read failed: {}", e));
+                                }
+                            }
                         }
 
                         Ok(ApplyResult {

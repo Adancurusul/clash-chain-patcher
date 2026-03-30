@@ -14,6 +14,7 @@
 //! - ui_helpers.rs: UI & Logging Helpers
 
 use makepad_widgets::*;
+use clash_chain_patcher::patcher::RuleGroup;
 use clash_chain_patcher::state::ProxyState;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -46,7 +47,7 @@ live_design! {
                     color: #1a1a1a
                 }
 
-                body = <View> {
+                body = <ScrollYView> {
                     width: Fill,
                     height: Fill,
                     flow: Down,
@@ -355,6 +356,259 @@ live_design! {
                         }
                     }
 
+                    // Rules Rewrite (collapsible)
+                    <View> {
+                        width: Fill,
+                        height: Fit,
+                        padding: 8,
+                        flow: Down,
+                        spacing: 4,
+                        show_bg: true,
+                        draw_bg: {color: #333333}
+
+                        // Header row
+                        <View> {
+                            width: Fill,
+                            height: Fit,
+                            flow: Right,
+                            spacing: 6,
+                            align: {y: 0.5},
+
+                            <Label> {
+                                text: "Rules Rewrite"
+                                draw_text: {color: #ffffff, text_style: {font_size: 11.0}}
+                            }
+
+                            toggle_rules_btn = <Button> {
+                                width: Fit,
+                                height: Fit,
+                                padding: {left: 8, right: 8, top: 4, bottom: 4},
+                                text: "▼"
+                                draw_text: {color: #ffffff, text_style: {font_size: 10.0}}
+                                draw_bg: {
+                                    fn pixel(self) -> vec4 {
+                                        return mix(#555555, #777777, self.hover);
+                                    }
+                                }
+                            }
+
+                            <View> { width: Fill, height: Fit }
+
+                            rules_stats_label = <Label> {
+                                text: "No rules"
+                                draw_text: {color: #888888, text_style: {font_size: 9.0}}
+                            }
+                        }
+
+                        // Rules group slots (collapsible)
+                        rules_panel = <View> {
+                            visible: false,
+                            width: Fill,
+                            height: Fit,
+                            flow: Down,
+                            spacing: 1,
+                            padding: {top: 2},
+
+                            // Slot 1
+                            rule_slot_1 = <View> {
+                                visible: false, width: Fill, height: Fit,
+                                flow: Right, spacing: 4, align: {y: 0.5},
+                                padding: {left: 4, right: 4, top: 2, bottom: 2},
+                                show_bg: true, draw_bg: {color: #2a2a2a}
+
+                                rule_check_1 = <Button> {
+                                    width: 20, height: 20,
+                                    text: "·"
+                                    draw_text: {color: #666666, text_style: {font_size: 10.0}}
+                                    draw_bg: { fn pixel(self) -> vec4 { return mix(#2a2a2a, #3a3a3a, self.hover); } }
+                                }
+                                rule_name_1 = <Label> { width: Fill, text: "", draw_text: {color: #ffffff, text_style: {font_size: 9.0}} }
+                                rule_count_1 = <Label> { width: 60, text: "", draw_text: {color: #888888, text_style: {font_size: 9.0}} }
+                                rule_target_1 = <Button> { width: 110, height: 20, text: "Keep", draw_text: {color: #aaccff, text_style: {font_size: 9.0}}, draw_bg: { fn pixel(self) -> vec4 { return mix(#3a3a3a, #555555, self.hover); } } }
+                            }
+
+                            // Slot 2
+                            rule_slot_2 = <View> {
+                                visible: false, width: Fill, height: Fit,
+                                flow: Right, spacing: 4, align: {y: 0.5},
+                                padding: {left: 4, right: 4, top: 2, bottom: 2},
+                                show_bg: true, draw_bg: {color: #2a2a2a}
+                                rule_check_2 = <Button> { width: 20, height: 20, text: "·", draw_text: {color: #666666, text_style: {font_size: 10.0}}, draw_bg: { fn pixel(self) -> vec4 { return mix(#2a2a2a, #3a3a3a, self.hover); } } }
+                                rule_name_2 = <Label> { width: Fill, text: "", draw_text: {color: #ffffff, text_style: {font_size: 9.0}} }
+                                rule_count_2 = <Label> { width: 60, text: "", draw_text: {color: #888888, text_style: {font_size: 9.0}} }
+                                rule_target_2 = <Button> { width: 110, height: 20, text: "Keep", draw_text: {color: #aaccff, text_style: {font_size: 9.0}}, draw_bg: { fn pixel(self) -> vec4 { return mix(#3a3a3a, #555555, self.hover); } } }
+                            }
+
+                            // Slot 3
+                            rule_slot_3 = <View> {
+                                visible: false, width: Fill, height: Fit,
+                                flow: Right, spacing: 4, align: {y: 0.5},
+                                padding: {left: 4, right: 4, top: 2, bottom: 2},
+                                show_bg: true, draw_bg: {color: #2a2a2a}
+                                rule_check_3 = <Button> { width: 20, height: 20, text: "·", draw_text: {color: #666666, text_style: {font_size: 10.0}}, draw_bg: { fn pixel(self) -> vec4 { return mix(#2a2a2a, #3a3a3a, self.hover); } } }
+                                rule_name_3 = <Label> { width: Fill, text: "", draw_text: {color: #ffffff, text_style: {font_size: 9.0}} }
+                                rule_count_3 = <Label> { width: 60, text: "", draw_text: {color: #888888, text_style: {font_size: 9.0}} }
+                                rule_target_3 = <Button> { width: 110, height: 20, text: "Keep", draw_text: {color: #aaccff, text_style: {font_size: 9.0}}, draw_bg: { fn pixel(self) -> vec4 { return mix(#3a3a3a, #555555, self.hover); } } }
+                            }
+
+                            // Slot 4
+                            rule_slot_4 = <View> {
+                                visible: false, width: Fill, height: Fit,
+                                flow: Right, spacing: 4, align: {y: 0.5},
+                                padding: {left: 4, right: 4, top: 2, bottom: 2},
+                                show_bg: true, draw_bg: {color: #2a2a2a}
+                                rule_check_4 = <Button> { width: 20, height: 20, text: "·", draw_text: {color: #666666, text_style: {font_size: 10.0}}, draw_bg: { fn pixel(self) -> vec4 { return mix(#2a2a2a, #3a3a3a, self.hover); } } }
+                                rule_name_4 = <Label> { width: Fill, text: "", draw_text: {color: #ffffff, text_style: {font_size: 9.0}} }
+                                rule_count_4 = <Label> { width: 60, text: "", draw_text: {color: #888888, text_style: {font_size: 9.0}} }
+                                rule_target_4 = <Button> { width: 110, height: 20, text: "Keep", draw_text: {color: #aaccff, text_style: {font_size: 9.0}}, draw_bg: { fn pixel(self) -> vec4 { return mix(#3a3a3a, #555555, self.hover); } } }
+                            }
+
+                            // Slot 5
+                            rule_slot_5 = <View> {
+                                visible: false, width: Fill, height: Fit,
+                                flow: Right, spacing: 4, align: {y: 0.5},
+                                padding: {left: 4, right: 4, top: 2, bottom: 2},
+                                show_bg: true, draw_bg: {color: #2a2a2a}
+                                rule_check_5 = <Button> { width: 20, height: 20, text: "·", draw_text: {color: #666666, text_style: {font_size: 10.0}}, draw_bg: { fn pixel(self) -> vec4 { return mix(#2a2a2a, #3a3a3a, self.hover); } } }
+                                rule_name_5 = <Label> { width: Fill, text: "", draw_text: {color: #ffffff, text_style: {font_size: 9.0}} }
+                                rule_count_5 = <Label> { width: 60, text: "", draw_text: {color: #888888, text_style: {font_size: 9.0}} }
+                                rule_target_5 = <Button> { width: 110, height: 20, text: "Keep", draw_text: {color: #aaccff, text_style: {font_size: 9.0}}, draw_bg: { fn pixel(self) -> vec4 { return mix(#3a3a3a, #555555, self.hover); } } }
+                            }
+
+                            // Slot 6
+                            rule_slot_6 = <View> {
+                                visible: false, width: Fill, height: Fit,
+                                flow: Right, spacing: 4, align: {y: 0.5},
+                                padding: {left: 4, right: 4, top: 2, bottom: 2},
+                                show_bg: true, draw_bg: {color: #2a2a2a}
+                                rule_check_6 = <Button> { width: 20, height: 20, text: "·", draw_text: {color: #666666, text_style: {font_size: 10.0}}, draw_bg: { fn pixel(self) -> vec4 { return mix(#2a2a2a, #3a3a3a, self.hover); } } }
+                                rule_name_6 = <Label> { width: Fill, text: "", draw_text: {color: #ffffff, text_style: {font_size: 9.0}} }
+                                rule_count_6 = <Label> { width: 60, text: "", draw_text: {color: #888888, text_style: {font_size: 9.0}} }
+                                rule_target_6 = <Button> { width: 110, height: 20, text: "Keep", draw_text: {color: #aaccff, text_style: {font_size: 9.0}}, draw_bg: { fn pixel(self) -> vec4 { return mix(#3a3a3a, #555555, self.hover); } } }
+                            }
+
+                            // Slot 7
+                            rule_slot_7 = <View> {
+                                visible: false, width: Fill, height: Fit,
+                                flow: Right, spacing: 4, align: {y: 0.5},
+                                padding: {left: 4, right: 4, top: 2, bottom: 2},
+                                show_bg: true, draw_bg: {color: #2a2a2a}
+                                rule_check_7 = <Button> { width: 20, height: 20, text: "·", draw_text: {color: #666666, text_style: {font_size: 10.0}}, draw_bg: { fn pixel(self) -> vec4 { return mix(#2a2a2a, #3a3a3a, self.hover); } } }
+                                rule_name_7 = <Label> { width: Fill, text: "", draw_text: {color: #ffffff, text_style: {font_size: 9.0}} }
+                                rule_count_7 = <Label> { width: 60, text: "", draw_text: {color: #888888, text_style: {font_size: 9.0}} }
+                                rule_target_7 = <Button> { width: 110, height: 20, text: "Keep", draw_text: {color: #aaccff, text_style: {font_size: 9.0}}, draw_bg: { fn pixel(self) -> vec4 { return mix(#3a3a3a, #555555, self.hover); } } }
+                            }
+
+                            // Slot 8
+                            rule_slot_8 = <View> {
+                                visible: false, width: Fill, height: Fit,
+                                flow: Right, spacing: 4, align: {y: 0.5},
+                                padding: {left: 4, right: 4, top: 2, bottom: 2},
+                                show_bg: true, draw_bg: {color: #2a2a2a}
+                                rule_check_8 = <Button> { width: 20, height: 20, text: "·", draw_text: {color: #666666, text_style: {font_size: 10.0}}, draw_bg: { fn pixel(self) -> vec4 { return mix(#2a2a2a, #3a3a3a, self.hover); } } }
+                                rule_name_8 = <Label> { width: Fill, text: "", draw_text: {color: #ffffff, text_style: {font_size: 9.0}} }
+                                rule_count_8 = <Label> { width: 60, text: "", draw_text: {color: #888888, text_style: {font_size: 9.0}} }
+                                rule_target_8 = <Button> { width: 110, height: 20, text: "Keep", draw_text: {color: #aaccff, text_style: {font_size: 9.0}}, draw_bg: { fn pixel(self) -> vec4 { return mix(#3a3a3a, #555555, self.hover); } } }
+                            }
+
+                            // Slot 9
+                            rule_slot_9 = <View> {
+                                visible: false, width: Fill, height: Fit,
+                                flow: Right, spacing: 4, align: {y: 0.5},
+                                padding: {left: 4, right: 4, top: 2, bottom: 2},
+                                show_bg: true, draw_bg: {color: #2a2a2a}
+                                rule_check_9 = <Button> { width: 20, height: 20, text: "·", draw_text: {color: #666666, text_style: {font_size: 10.0}}, draw_bg: { fn pixel(self) -> vec4 { return mix(#2a2a2a, #3a3a3a, self.hover); } } }
+                                rule_name_9 = <Label> { width: Fill, text: "", draw_text: {color: #ffffff, text_style: {font_size: 9.0}} }
+                                rule_count_9 = <Label> { width: 60, text: "", draw_text: {color: #888888, text_style: {font_size: 9.0}} }
+                                rule_target_9 = <Button> { width: 110, height: 20, text: "Keep", draw_text: {color: #aaccff, text_style: {font_size: 9.0}}, draw_bg: { fn pixel(self) -> vec4 { return mix(#3a3a3a, #555555, self.hover); } } }
+                            }
+
+                            // Slot 10
+                            rule_slot_10 = <View> {
+                                visible: false, width: Fill, height: Fit,
+                                flow: Right, spacing: 4, align: {y: 0.5},
+                                padding: {left: 4, right: 4, top: 2, bottom: 2},
+                                show_bg: true, draw_bg: {color: #2a2a2a}
+                                rule_check_10 = <Button> { width: 20, height: 20, text: "·", draw_text: {color: #666666, text_style: {font_size: 10.0}}, draw_bg: { fn pixel(self) -> vec4 { return mix(#2a2a2a, #3a3a3a, self.hover); } } }
+                                rule_name_10 = <Label> { width: Fill, text: "", draw_text: {color: #ffffff, text_style: {font_size: 9.0}} }
+                                rule_count_10 = <Label> { width: 60, text: "", draw_text: {color: #888888, text_style: {font_size: 9.0}} }
+                                rule_target_10 = <Button> { width: 110, height: 20, text: "Keep", draw_text: {color: #aaccff, text_style: {font_size: 9.0}}, draw_bg: { fn pixel(self) -> vec4 { return mix(#3a3a3a, #555555, self.hover); } } }
+                            }
+
+                            // Slot 11
+                            rule_slot_11 = <View> {
+                                visible: false, width: Fill, height: Fit,
+                                flow: Right, spacing: 4, align: {y: 0.5},
+                                padding: {left: 4, right: 4, top: 2, bottom: 2},
+                                show_bg: true, draw_bg: {color: #2a2a2a}
+                                rule_check_11 = <Button> { width: 20, height: 20, text: "·", draw_text: {color: #666666, text_style: {font_size: 10.0}}, draw_bg: { fn pixel(self) -> vec4 { return mix(#2a2a2a, #3a3a3a, self.hover); } } }
+                                rule_name_11 = <Label> { width: Fill, text: "", draw_text: {color: #ffffff, text_style: {font_size: 9.0}} }
+                                rule_count_11 = <Label> { width: 60, text: "", draw_text: {color: #888888, text_style: {font_size: 9.0}} }
+                                rule_target_11 = <Button> { width: 110, height: 20, text: "Keep", draw_text: {color: #aaccff, text_style: {font_size: 9.0}}, draw_bg: { fn pixel(self) -> vec4 { return mix(#3a3a3a, #555555, self.hover); } } }
+                            }
+
+                            // Slot 12
+                            rule_slot_12 = <View> {
+                                visible: false, width: Fill, height: Fit,
+                                flow: Right, spacing: 4, align: {y: 0.5},
+                                padding: {left: 4, right: 4, top: 2, bottom: 2},
+                                show_bg: true, draw_bg: {color: #2a2a2a}
+                                rule_check_12 = <Button> { width: 20, height: 20, text: "·", draw_text: {color: #666666, text_style: {font_size: 10.0}}, draw_bg: { fn pixel(self) -> vec4 { return mix(#2a2a2a, #3a3a3a, self.hover); } } }
+                                rule_name_12 = <Label> { width: Fill, text: "", draw_text: {color: #ffffff, text_style: {font_size: 9.0}} }
+                                rule_count_12 = <Label> { width: 60, text: "", draw_text: {color: #888888, text_style: {font_size: 9.0}} }
+                                rule_target_12 = <Button> { width: 110, height: 20, text: "Keep", draw_text: {color: #aaccff, text_style: {font_size: 9.0}}, draw_bg: { fn pixel(self) -> vec4 { return mix(#3a3a3a, #555555, self.hover); } } }
+                            }
+
+                            // Slot 13
+                            rule_slot_13 = <View> {
+                                visible: false, width: Fill, height: Fit,
+                                flow: Right, spacing: 4, align: {y: 0.5},
+                                padding: {left: 4, right: 4, top: 2, bottom: 2},
+                                show_bg: true, draw_bg: {color: #2a2a2a}
+                                rule_check_13 = <Button> { width: 20, height: 20, text: "·", draw_text: {color: #666666, text_style: {font_size: 10.0}}, draw_bg: { fn pixel(self) -> vec4 { return mix(#2a2a2a, #3a3a3a, self.hover); } } }
+                                rule_name_13 = <Label> { width: Fill, text: "", draw_text: {color: #ffffff, text_style: {font_size: 9.0}} }
+                                rule_count_13 = <Label> { width: 60, text: "", draw_text: {color: #888888, text_style: {font_size: 9.0}} }
+                                rule_target_13 = <Button> { width: 110, height: 20, text: "Keep", draw_text: {color: #aaccff, text_style: {font_size: 9.0}}, draw_bg: { fn pixel(self) -> vec4 { return mix(#3a3a3a, #555555, self.hover); } } }
+                            }
+
+                            // Slot 14
+                            rule_slot_14 = <View> {
+                                visible: false, width: Fill, height: Fit,
+                                flow: Right, spacing: 4, align: {y: 0.5},
+                                padding: {left: 4, right: 4, top: 2, bottom: 2},
+                                show_bg: true, draw_bg: {color: #2a2a2a}
+                                rule_check_14 = <Button> { width: 20, height: 20, text: "·", draw_text: {color: #666666, text_style: {font_size: 10.0}}, draw_bg: { fn pixel(self) -> vec4 { return mix(#2a2a2a, #3a3a3a, self.hover); } } }
+                                rule_name_14 = <Label> { width: Fill, text: "", draw_text: {color: #ffffff, text_style: {font_size: 9.0}} }
+                                rule_count_14 = <Label> { width: 60, text: "", draw_text: {color: #888888, text_style: {font_size: 9.0}} }
+                                rule_target_14 = <Button> { width: 110, height: 20, text: "Keep", draw_text: {color: #aaccff, text_style: {font_size: 9.0}}, draw_bg: { fn pixel(self) -> vec4 { return mix(#3a3a3a, #555555, self.hover); } } }
+                            }
+
+                            // Slot 15
+                            rule_slot_15 = <View> {
+                                visible: false, width: Fill, height: Fit,
+                                flow: Right, spacing: 4, align: {y: 0.5},
+                                padding: {left: 4, right: 4, top: 2, bottom: 2},
+                                show_bg: true, draw_bg: {color: #2a2a2a}
+                                rule_check_15 = <Button> { width: 20, height: 20, text: "·", draw_text: {color: #666666, text_style: {font_size: 10.0}}, draw_bg: { fn pixel(self) -> vec4 { return mix(#2a2a2a, #3a3a3a, self.hover); } } }
+                                rule_name_15 = <Label> { width: Fill, text: "", draw_text: {color: #ffffff, text_style: {font_size: 9.0}} }
+                                rule_count_15 = <Label> { width: 60, text: "", draw_text: {color: #888888, text_style: {font_size: 9.0}} }
+                                rule_target_15 = <Button> { width: 110, height: 20, text: "Keep", draw_text: {color: #aaccff, text_style: {font_size: 9.0}}, draw_bg: { fn pixel(self) -> vec4 { return mix(#3a3a3a, #555555, self.hover); } } }
+                            }
+
+                            // Slot 16
+                            rule_slot_16 = <View> {
+                                visible: false, width: Fill, height: Fit,
+                                flow: Right, spacing: 4, align: {y: 0.5},
+                                padding: {left: 4, right: 4, top: 2, bottom: 2},
+                                show_bg: true, draw_bg: {color: #2a2a2a}
+                                rule_check_16 = <Button> { width: 20, height: 20, text: "·", draw_text: {color: #666666, text_style: {font_size: 10.0}}, draw_bg: { fn pixel(self) -> vec4 { return mix(#2a2a2a, #3a3a3a, self.hover); } } }
+                                rule_name_16 = <Label> { width: Fill, text: "", draw_text: {color: #ffffff, text_style: {font_size: 9.0}} }
+                                rule_count_16 = <Label> { width: 60, text: "", draw_text: {color: #888888, text_style: {font_size: 9.0}} }
+                                rule_target_16 = <Button> { width: 110, height: 20, text: "Keep", draw_text: {color: #aaccff, text_style: {font_size: 9.0}}, draw_bg: { fn pixel(self) -> vec4 { return mix(#3a3a3a, #555555, self.hover); } } }
+                            }
+                        }
+                    }
+
                     // Proxy Pool Management
                     <View> {
                         width: Fill,
@@ -641,7 +895,7 @@ live_design! {
                     // Output
                     <View> {
                         width: Fill,
-                        height: Fill,
+                        height: 200,
                         padding: 8,
                         flow: Down,
                         show_bg: true,
@@ -655,7 +909,7 @@ live_design! {
 
                         log_scroll = <ScrollYView> {
                             width: Fill,
-                            height: Fill,
+                            height: 160,
                             padding: 6,
                             show_bg: true,
                             draw_bg: {color: #222222}
@@ -715,6 +969,35 @@ pub struct ApplyResult {
 /// Maximum number of log lines to retain
 pub const MAX_LOG_LINES: usize = 200;
 
+/// Maximum number of rule group slots in the UI
+pub const MAX_RULE_SLOTS: usize = 16;
+
+/// Replace target for a rule group
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuleReplaceTarget {
+    Keep,
+    ChainSelector,
+    ChainAuto,
+}
+
+impl RuleReplaceTarget {
+    pub fn label(&self) -> &str {
+        match self {
+            Self::Keep => "Keep",
+            Self::ChainSelector => "Chain-Selector",
+            Self::ChainAuto => "Chain-Auto",
+        }
+    }
+
+    pub fn next(&self) -> Self {
+        match self {
+            Self::Keep => Self::ChainSelector,
+            Self::ChainSelector => Self::ChainAuto,
+            Self::ChainAuto => Self::Keep,
+        }
+    }
+}
+
 /// Application state
 pub struct AppState {
     pub config_content: Option<String>,
@@ -740,6 +1023,11 @@ pub struct AppState {
     pub watcher_bridge: Option<clash_chain_patcher::bridge::WatcherBridge>,
     pub apply_result_rx: Option<std::sync::mpsc::Receiver<ApplyResult>>,
     pub is_applying: bool,
+    // Rules rewrite
+    pub show_rules_panel: bool,
+    pub rule_groups: Vec<RuleGroup>,
+    pub rule_checked: Vec<bool>,
+    pub rule_targets: Vec<RuleReplaceTarget>,
 }
 
 impl Default for AppState {
@@ -764,6 +1052,10 @@ impl Default for AppState {
             watcher_bridge: None,
             apply_result_rx: None,
             is_applying: false,
+            show_rules_panel: false,
+            rule_groups: Vec::new(),
+            rule_checked: vec![false; MAX_RULE_SLOTS],
+            rule_targets: vec![RuleReplaceTarget::Keep; MAX_RULE_SLOTS],
         }
     }
 }
@@ -838,6 +1130,34 @@ impl MatchEvent for App {
         }
         if self.ui.button(id!(recent_file_del_3)).clicked(actions) {
             self.remove_recent_file(cx, 2);
+        }
+        if self.ui.button(id!(toggle_rules_btn)).clicked(actions) {
+            self.toggle_rules_panel(cx);
+        }
+        // Rules check buttons (toggle checkbox)
+        for slot in 1..=MAX_RULE_SLOTS {
+            let check_id = match slot {
+                1 => id!(rule_check_1), 2 => id!(rule_check_2), 3 => id!(rule_check_3),
+                4 => id!(rule_check_4), 5 => id!(rule_check_5), 6 => id!(rule_check_6),
+                7 => id!(rule_check_7), 8 => id!(rule_check_8), 9 => id!(rule_check_9),
+                10 => id!(rule_check_10), 11 => id!(rule_check_11), 12 => id!(rule_check_12),
+                13 => id!(rule_check_13), 14 => id!(rule_check_14), 15 => id!(rule_check_15),
+                16 => id!(rule_check_16), _ => continue,
+            };
+            let target_id = match slot {
+                1 => id!(rule_target_1), 2 => id!(rule_target_2), 3 => id!(rule_target_3),
+                4 => id!(rule_target_4), 5 => id!(rule_target_5), 6 => id!(rule_target_6),
+                7 => id!(rule_target_7), 8 => id!(rule_target_8), 9 => id!(rule_target_9),
+                10 => id!(rule_target_10), 11 => id!(rule_target_11), 12 => id!(rule_target_12),
+                13 => id!(rule_target_13), 14 => id!(rule_target_14), 15 => id!(rule_target_15),
+                16 => id!(rule_target_16), _ => continue,
+            };
+            if self.ui.button(check_id).clicked(actions) {
+                self.toggle_rule_check(cx, slot - 1);
+            }
+            if self.ui.button(target_id).clicked(actions) {
+                self.cycle_rule_target(cx, slot - 1);
+            }
         }
         if self.ui.button(id!(fill_btn)).clicked(actions) {
             self.fill_proxy_fields(cx);

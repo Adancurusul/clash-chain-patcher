@@ -8,7 +8,7 @@
 
 use regex::Regex;
 use serde_yaml::{Mapping, Value};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 /// SOCKS5 proxy configuration
 #[derive(Debug, Clone)]
@@ -359,10 +359,16 @@ pub fn apply_patch(
         // Create proxy-groups if not exists
         let mut groups = relay_groups;
         groups.push(Value::Mapping(chain_selector));
-        config
-            .as_mapping_mut()
-            .unwrap()
-            .insert(Value::String("proxy-groups".to_string()), Value::Sequence(groups));
+        if let Some(mapping) = config.as_mapping_mut() {
+            mapping.insert(Value::String("proxy-groups".to_string()), Value::Sequence(groups));
+        } else {
+            return PatchResult {
+                success: false,
+                logs: vec!["[ERROR] Config root is not a YAML mapping".to_string()],
+                output: None,
+                relay_names: vec![],
+            };
+        }
     }
 
     logs.push(format!("[+] Added {} chain proxy groups", relay_names.len()));
@@ -387,6 +393,120 @@ pub fn apply_patch(
         output: Some(output),
         relay_names,
     }
+}
+
+/// A rule group found in the rules section, with its name and count
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuleGroup {
+    /// The proxy group name (e.g. "YepFast-椰皮加速", "DIRECT", "REJECT")
+    pub name: String,
+    /// How many rules reference this group
+    pub count: usize,
+}
+
+/// Parse a single rule string and extract the proxy group name.
+///
+/// Rule formats:
+/// - `TYPE,PATTERN,GROUP` (e.g. "DOMAIN,example.com,Proxy")
+/// - `TYPE,PATTERN,GROUP,extra` (e.g. "IP-CIDR,1.1.1.1/32,Proxy,no-resolve")
+/// - `MATCH,GROUP` (the default/fallback rule)
+fn extract_group_from_rule(rule: &str) -> Option<String> {
+    let parts: Vec<&str> = rule.split(',').collect();
+    match parts.len() {
+        // MATCH,GROUP
+        2 if parts[0].trim() == "MATCH" => Some(parts[1].trim().to_string()),
+        // TYPE,PATTERN,GROUP or TYPE,PATTERN,GROUP,extra
+        n if n >= 3 => Some(parts[2].trim().to_string()),
+        _ => None,
+    }
+}
+
+/// Extract all unique proxy groups referenced in the rules section,
+/// along with their rule counts. Results are sorted by count (descending).
+pub fn extract_rule_groups(config_content: &str) -> Vec<RuleGroup> {
+    let config: Value = match serde_yaml::from_str(config_content) {
+        Ok(v) => v,
+        Err(_) => return vec![],
+    };
+
+    extract_rule_groups_from_value(&config)
+}
+
+/// Extract rule groups from a parsed YAML Value
+pub fn extract_rule_groups_from_value(config: &Value) -> Vec<RuleGroup> {
+    let mut counts: HashMap<String, usize> = HashMap::new();
+
+    if let Some(rules) = config.get("rules").and_then(|v| v.as_sequence()) {
+        for rule in rules {
+            if let Some(rule_str) = rule.as_str() {
+                if let Some(group) = extract_group_from_rule(rule_str) {
+                    *counts.entry(group).or_insert(0) += 1;
+                }
+            }
+        }
+    }
+
+    let mut groups: Vec<RuleGroup> = counts
+        .into_iter()
+        .map(|(name, count)| RuleGroup { name, count })
+        .collect();
+
+    // Sort by count descending, then name ascending
+    groups.sort_by(|a, b| b.count.cmp(&a.count).then(a.name.cmp(&b.name)));
+    groups
+}
+
+/// Rewrite rules in-place: for each rule whose group is a key in `replacements`,
+/// replace the group with the corresponding value.
+///
+/// Returns the number of rules rewritten.
+pub fn rewrite_rules(config_content: &str, replacements: &HashMap<String, String>) -> Result<(String, usize), String> {
+    if replacements.is_empty() {
+        return Ok((config_content.to_string(), 0));
+    }
+
+    let mut config: Value = serde_yaml::from_str(config_content)
+        .map_err(|e| format!("YAML parse error: {}", e))?;
+
+    let rewritten = rewrite_rules_in_value(&mut config, replacements);
+
+    let output = serde_yaml::to_string(&config)
+        .map_err(|e| format!("YAML serialize error: {}", e))?;
+
+    Ok((output, rewritten))
+}
+
+/// Rewrite rules in a mutable YAML Value. Returns count of rewritten rules.
+pub fn rewrite_rules_in_value(config: &mut Value, replacements: &HashMap<String, String>) -> usize {
+    let mut rewritten = 0;
+
+    let rules = match config.get_mut("rules").and_then(|v| v.as_sequence_mut()) {
+        Some(r) => r,
+        None => return 0,
+    };
+
+    for rule in rules.iter_mut() {
+        if let Some(rule_str) = rule.as_str() {
+            let parts: Vec<&str> = rule_str.split(',').collect();
+            let (group_idx, group) = if parts.len() == 2 && parts[0].trim() == "MATCH" {
+                (1, parts[1].trim())
+            } else if parts.len() >= 3 {
+                (2, parts[2].trim())
+            } else {
+                continue;
+            };
+
+            if let Some(new_group) = replacements.get(group) {
+                // Rebuild the rule string with the new group
+                let mut new_parts: Vec<String> = parts.iter().map(|s| s.to_string()).collect();
+                new_parts[group_idx] = new_group.clone();
+                *rule = Value::String(new_parts.join(","));
+                rewritten += 1;
+            }
+        }
+    }
+
+    rewritten
 }
 
 #[cfg(test)]
@@ -419,5 +539,77 @@ mod tests {
     fn test_clean_proxy_name() {
         assert_eq!(clean_proxy_name("[US] Node (Test)"), "USNodeTest");
         assert_eq!(clean_proxy_name("香港节点"), "香港节点");
+    }
+
+    #[test]
+    fn test_extract_group_from_rule() {
+        assert_eq!(extract_group_from_rule("MATCH,Proxy"), Some("Proxy".to_string()));
+        assert_eq!(extract_group_from_rule("DOMAIN,example.com,MyProxy"), Some("MyProxy".to_string()));
+        assert_eq!(extract_group_from_rule("IP-CIDR,1.1.1.1/32,Proxy,no-resolve"), Some("Proxy".to_string()));
+        assert_eq!(extract_group_from_rule("DOMAIN-SUFFIX,cn,DIRECT"), Some("DIRECT".to_string()));
+        assert_eq!(extract_group_from_rule("invalid"), None);
+    }
+
+    #[test]
+    fn test_extract_rule_groups() {
+        let yaml = r#"
+rules:
+  - DOMAIN,a.com,ProxyA
+  - DOMAIN,b.com,ProxyA
+  - DOMAIN,c.com,DIRECT
+  - IP-CIDR,1.1.1.1/32,ProxyA,no-resolve
+  - MATCH,ProxyA
+"#;
+        let groups = extract_rule_groups(yaml);
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0].name, "ProxyA");
+        assert_eq!(groups[0].count, 4);
+        assert_eq!(groups[1].name, "DIRECT");
+        assert_eq!(groups[1].count, 1);
+    }
+
+    #[test]
+    fn test_rewrite_rules() {
+        let yaml = r#"
+rules:
+  - DOMAIN,a.com,OldProxy
+  - DOMAIN,b.com,DIRECT
+  - IP-CIDR,1.1.1.1/32,OldProxy,no-resolve
+  - MATCH,OldProxy
+"#;
+        let mut replacements = HashMap::new();
+        replacements.insert("OldProxy".to_string(), "Chain-Selector".to_string());
+
+        let (output, count) = rewrite_rules(yaml, &replacements).unwrap();
+        assert_eq!(count, 3);
+        assert!(output.contains("Chain-Selector"));
+        assert!(!output.contains("OldProxy"));
+        // DIRECT should remain unchanged
+        assert!(output.contains("DIRECT"));
+    }
+
+    #[test]
+    fn test_rewrite_rules_match_rule() {
+        // Ensure MATCH rule is also rewritten correctly
+        let yaml = r#"
+rules:
+  - DOMAIN,a.com,Proxy
+  - MATCH,Proxy
+"#;
+        let mut replacements = HashMap::new();
+        replacements.insert("Proxy".to_string(), "Chain-Auto".to_string());
+
+        let (output, count) = rewrite_rules(yaml, &replacements).unwrap();
+        assert_eq!(count, 2);
+        assert!(output.contains("MATCH,Chain-Auto"));
+        assert!(output.contains("Chain-Auto"));
+    }
+
+    #[test]
+    fn test_rewrite_rules_no_replacements() {
+        let yaml = "rules:\n  - DOMAIN,a.com,Proxy\n";
+        let (output, count) = rewrite_rules(yaml, &HashMap::new()).unwrap();
+        assert_eq!(count, 0);
+        assert_eq!(output, yaml);
     }
 }

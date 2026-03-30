@@ -49,6 +49,10 @@ impl App {
                 self.ui.label(id!(file_label)).set_text(cx, &filename);
                 self.set_status(cx, "Loaded");
                 self.refresh_file_history_display(cx);
+
+                // Parse rule groups for Rules Rewrite panel
+                self.refresh_rule_groups(cx);
+
                 self.ui.redraw(cx);
             }
             Err(e) => {
@@ -70,6 +74,9 @@ impl App {
             self.clear_logs(cx);
             self.add_log(cx, "✓ Cleared Clash config selection");
         }
+
+        // Clear rules rewrite state
+        self.refresh_rule_groups(cx);
 
         self.ui.label(id!(file_label)).set_text(cx, "No file");
         self.set_status(cx, "Ready");

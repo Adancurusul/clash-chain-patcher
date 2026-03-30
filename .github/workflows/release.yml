@@ -48,11 +48,16 @@ jobs:
           path: dist/*.exe
           if-no-files-found: ignore
 
+      # Build CLI binary
+      - name: Build CLI
+        run: cargo build --release --bin ccp
+
       # Create portable version with resources bundled
       - name: Create portable zip
         run: |
           mkdir -p portable
           cp target/release/clash-chain-patcher.exe portable/
+          cp target/release/ccp.exe portable/
           if (Test-Path "dist/resources") {
             Copy-Item -Recurse dist/resources/* portable/
           }
@@ -117,6 +122,10 @@ jobs:
               "dist/dmg-source/" || true
           fi
         continue-on-error: true
+
+      # Build CLI binary
+      - name: Build CLI
+        run: cargo build --release --bin ccp
 
       - name: Zip app bundle
         run: |
@@ -201,11 +210,17 @@ jobs:
           path: dist/*.deb
           if-no-files-found: ignore
 
+      # Build CLI binary
+      - name: Build CLI
+        run: cargo build --release --bin ccp
+
       - name: Upload plain binary
         uses: actions/upload-artifact@v4
         with:
           name: clash-chain-patcher-linux
-          path: target/release/clash-chain-patcher
+          path: |
+            target/release/clash-chain-patcher
+            target/release/ccp
 
   release:
     needs: [build-windows, build-macos, build-linux]
@@ -233,6 +248,7 @@ jobs:
           cp artifacts/clash-chain-patcher-macos-dmg/Clash-Chain-Patcher-macos.dmg release/ || true
           # Linux
           cp artifacts/clash-chain-patcher-linux/clash-chain-patcher release/clash-chain-patcher-linux || true
+          cp artifacts/clash-chain-patcher-linux/ccp release/ccp-linux || true
           cp artifacts/clash-chain-patcher-linux-deb/*.deb release/ || true
           chmod +x release/clash-chain-patcher-linux || true
 

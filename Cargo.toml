@@ -1,9 +1,10 @@
 [package]
 name = "clash-chain-patcher"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 authors = ["Clash Chain Patcher"]
-description = "A GUI tool to add SOCKS5 proxy chains to Clash configurations"
+description = "A GUI & CLI tool to add SOCKS5 proxy chains to Clash configurations"
+default-run = "clash-chain-patcher"
 
 [lib]
 name = "clash_chain_patcher"
@@ -12,6 +13,10 @@ path = "src/lib.rs"
 [[bin]]
 name = "clash-chain-patcher"
 path = "src/main.rs"
+
+[[bin]]
+name = "ccp"
+path = "src/cli.rs"
 
 [dependencies]
 # Makepad GUI framework
@@ -85,8 +90,8 @@ codegen-units = 1
 # Basic info
 product-name = "Clash Chain Patcher"
 identifier = "com.clashchain.patcher"
-version = "0.1.2"
-description = "A GUI tool to add SOCKS5 proxy chains to Clash configurations"
+version = "0.3.0"
+description = "A GUI & CLI tool to add SOCKS5 proxy chains to Clash configurations"
 homepage = "https://github.com/clash-chain-patcher"
 license-file = "LICENSE"
 
