@@ -509,6 +509,56 @@ pub fn rewrite_rules_in_value(config: &mut Value, replacements: &HashMap<String,
     rewritten
 }
 
+/// Text-based rules rewrite that preserves original YAML formatting.
+/// Unlike `rewrite_rules`, this does NOT parse/serialize YAML, so flow style,
+/// quoting, indentation, and comments are all preserved.
+pub fn rewrite_rules_text(content: &str, replacements: &HashMap<String, String>) -> (String, usize) {
+    if replacements.is_empty() {
+        return (content.to_string(), 0);
+    }
+
+    let mut count = 0;
+    let mut in_rules_section = false;
+
+    let lines: Vec<String> = content.lines().map(|line| {
+        let trimmed = line.trim_start();
+
+        // Detect top-level section changes (line starts at column 0 with "key:")
+        if !line.starts_with(' ') && !line.starts_with('\t') && !line.is_empty() {
+            in_rules_section = trimmed.starts_with("rules:");
+        }
+
+        if !in_rules_section {
+            return line.to_string();
+        }
+
+        // Only process rule lines (contain comma-separated rule parts)
+        // Rule lines look like: "    - 'DOMAIN-SUFFIX,google.com,Proxy'"
+        // or: "- DOMAIN-SUFFIX,google.com,Proxy"
+        if !trimmed.starts_with("- ") {
+            return line.to_string();
+        }
+
+        for (old_group, new_group) in replacements {
+            // Match ",oldgroup" possibly followed by quote or end
+            let pattern = format!(",{}", old_group);
+            if line.contains(&pattern) {
+                count += 1;
+                return line.replacen(&pattern, &format!(",{}", new_group), 1);
+            }
+        }
+
+        line.to_string()
+    }).collect();
+
+    // Preserve trailing newline if original had one
+    let mut output = lines.join("\n");
+    if content.ends_with('\n') && !output.ends_with('\n') {
+        output.push('\n');
+    }
+    (output, count)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

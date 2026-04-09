@@ -172,22 +172,16 @@ impl App {
                             details.push(format!("Backup: {}", backup_path.display()));
                         }
 
-                        // Apply rules rewrite if any
+                        // Apply rules rewrite if any (text-based, format-preserving)
                         if !rule_replacements.is_empty() {
                             match std::fs::read_to_string(&config_path) {
                                 Ok(content) => {
-                                    match clash_chain_patcher::patcher::rewrite_rules(&content, &rule_replacements) {
-                                        Ok((output, count)) => {
-                                            if count > 0 {
-                                                if let Err(e) = std::fs::write(&config_path, output) {
-                                                    details.push(format!("✗ Rules rewrite write failed: {}", e));
-                                                } else {
-                                                    details.push(format!("Rules rewritten: {} rules updated", count));
-                                                }
-                                            }
-                                        }
-                                        Err(e) => {
-                                            details.push(format!("✗ Rules rewrite failed: {}", e));
+                                    let (output, count) = clash_chain_patcher::patcher::rewrite_rules_text(&content, &rule_replacements);
+                                    if count > 0 {
+                                        if let Err(e) = std::fs::write(&config_path, output) {
+                                            details.push(format!("✗ Rules rewrite write failed: {}", e));
+                                        } else {
+                                            details.push(format!("Rules rewritten: {} rules updated", count));
                                         }
                                     }
                                 }

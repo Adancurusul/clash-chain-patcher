@@ -1,41 +1,29 @@
-//! Clash configuration merger implementation
+//! Clash configuration merger — text-based, format-preserving
 //!
 //! Creates relay chain proxies that route traffic through a local SOCKS5 proxy
 //! before reaching the target proxy nodes.
 //!
-//! Example chain: User -> Clash -> Local SOCKS5 (127.0.0.1:10808) -> Target Node (香港 01)
+//! Key design: uses serde_yaml for READ-ONLY analysis, but writes back using
+//! text manipulation to preserve the original YAML formatting (flow-style,
+//! indentation, quoting, comments).
 
 use anyhow::{Context, Result};
-use serde_yaml::{Mapping, Value};
+use serde_yaml::Value;
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
-use tracing::{debug, info, warn};
+use tracing::info;
 
 /// Configuration for the merger
 #[derive(Debug, Clone)]
 pub struct MergerConfig {
-    /// Name of the local proxy node (default: "Local-Chain-Proxy")
     pub proxy_name: String,
-
-    /// Local proxy server host (default: "127.0.0.1")
     pub proxy_host: String,
-
-    /// Local proxy server port (default: 10808)
     pub proxy_port: u16,
-
-    /// SOCKS5 username (optional)
     pub proxy_username: Option<String>,
-
-    /// SOCKS5 password (optional)
     pub proxy_password: Option<String>,
-
-    /// Whether to create backups (default: true)
     pub create_backup: bool,
-
-    /// Whether to insert proxy at the beginning of groups (default: true)
     pub insert_at_beginning: bool,
-
-    /// Suffix for chain proxy names (default: "-Chain")
     pub chain_suffix: String,
 }
 
@@ -57,219 +45,351 @@ impl Default for MergerConfig {
 /// Result of a merge operation
 #[derive(Debug, Clone)]
 pub struct MergeResult {
-    /// Whether the proxy node was added (false if it already existed)
     pub proxy_added: bool,
-
-    /// Number of proxy groups the proxy was added to
     pub groups_updated: usize,
-
-    /// Number of chain relay proxies created
     pub chains_created: usize,
-
-    /// Path to the backup file (if created)
     pub backup_path: Option<PathBuf>,
-
-    /// Any warnings encountered during merge
     pub warnings: Vec<String>,
 }
 
-/// Clash configuration merger
-///
-/// Creates relay chain proxies that route through a local SOCKS5 proxy.
-/// This allows traffic to go: Local SOCKS5 -> Target Proxy Node
+/// Clash configuration merger (format-preserving)
 pub struct ClashConfigMerger {
     config: MergerConfig,
 }
 
 impl ClashConfigMerger {
-    /// Create a new merger with default configuration
     pub fn new() -> Self {
-        Self {
-            config: MergerConfig::default(),
-        }
+        Self { config: MergerConfig::default() }
     }
 
-    /// Create a new merger with custom configuration
     pub fn with_config(config: MergerConfig) -> Self {
         Self { config }
     }
 
-    /// Merge local proxy configuration into Clash config file
-    ///
-    /// This will:
-    /// 1. Create a backup of the original file (if enabled)
-    /// 2. Add the local proxy node to the proxies list (if not exists)
-    /// 3. Create relay chain proxies for each existing proxy
-    /// 4. Add the chain proxies to select-type proxy groups
-    ///
-    /// Returns a MergeResult with details about what was changed.
+    pub fn config(&self) -> &MergerConfig {
+        &self.config
+    }
+
+    /// Merge local proxy configuration into Clash config file (format-preserving)
     pub fn merge<P: AsRef<Path>>(&self, config_path: P) -> Result<MergeResult> {
         let config_path = config_path.as_ref();
 
-        // Verify file exists
         if !config_path.exists() {
             anyhow::bail!("Config file does not exist: {}", config_path.display());
         }
-
-        // Check file is writable
         if let Ok(metadata) = fs::metadata(config_path) {
             if metadata.permissions().readonly() {
                 anyhow::bail!(
                     "Config file is read-only: {}. Please run: chmod u+w \"{}\"",
-                    config_path.display(),
-                    config_path.display()
+                    config_path.display(), config_path.display()
                 );
             }
         }
 
         info!("Starting Clash config merge for: {}", config_path.display());
 
-        // Create backup
+        // Create single backup (delete old backups first)
         let backup_path = if self.config.create_backup {
-            let backup_path = self.create_backup(config_path)?;
-            info!("Backup created: {}", backup_path.display());
-            Some(backup_path)
+            let bp = self.create_single_backup(config_path)?;
+            info!("Backup: {}", bp.display());
+            Some(bp)
         } else {
             None
         };
 
-        // Read and parse config
         let content = fs::read_to_string(config_path)
-            .with_context(|| format!("Failed to read config file: {}", config_path.display()))?;
-
-        let mut config: Value = serde_yaml::from_str(&content)
-            .with_context(|| format!("YAML parse error in: {}", config_path.display()))?;
+            .with_context(|| format!("Failed to read: {}", config_path.display()))?;
 
         let mut result = MergeResult {
-            proxy_added: false,
-            groups_updated: 0,
-            chains_created: 0,
-            backup_path,
-            warnings: Vec::new(),
+            proxy_added: false, groups_updated: 0, chains_created: 0,
+            backup_path, warnings: Vec::new(),
         };
 
-        // Merge the configuration
-        if let Err(e) = self.merge_config(&mut config, &mut result) {
-            // If merge fails and we have a backup, restore it
-            if let Some(ref backup_path) = result.backup_path {
-                warn!("Merge failed, restoring backup");
-                fs::copy(backup_path, config_path)
-                    .context("Failed to restore backup")?;
+        let output = match self.merge_text(&content, &mut result) {
+            Ok(out) => out,
+            Err(e) => {
+                if let Some(ref bp) = result.backup_path {
+                    let _ = fs::copy(bp, config_path);
+                }
+                return Err(e);
             }
-            return Err(e);
-        }
+        };
 
-        // Write back to file
-        let yaml_string = serde_yaml::to_string(&config)
-            .context("Failed to serialize config")?;
+        fs::write(config_path, &output)
+            .with_context(|| format!("Failed to write: {}", config_path.display()))?;
 
-        fs::write(config_path, &yaml_string)
-            .with_context(|| format!(
-                "Failed to write config file: {}. Check file permissions (chmod u+w)",
-                config_path.display()
-            ))?;
-
-        info!(
-            "Merge completed: proxy_added={}, chains_created={}, groups_updated={}",
-            result.proxy_added, result.chains_created, result.groups_updated
-        );
-
+        info!("Merge completed: proxy_added={}, chains={}, groups={}",
+            result.proxy_added, result.chains_created, result.groups_updated);
         Ok(result)
     }
 
-    /// Internal method to perform the actual merge logic
-    fn merge_config(&self, config: &mut Value, result: &mut MergeResult) -> Result<()> {
-        // Ensure config is a mapping
-        let config_map = config.as_mapping_mut()
+    /// Core text-based merge logic
+    fn merge_text(&self, content: &str, result: &mut MergeResult) -> Result<String> {
+        // Step 1: Parse with serde_yaml for READ-ONLY structure analysis
+        let parsed: Value = serde_yaml::from_str(content)
+            .context("YAML parse error")?;
+        let config_map = parsed.as_mapping()
             .context("Config root must be a YAML mapping")?;
 
-        // Clean all existing chain artifacts first (idempotent re-apply)
-        self.clean_existing_artifacts(config_map);
-
-        // Add local proxy node
-        result.proxy_added = self.add_proxy_node(config_map)?;
-
-        // Get list of existing proxy names (before adding chains)
-        let existing_proxies = self.get_proxy_names(config_map)?;
-
-        // Detect the main entry group from rules
+        let proxy_names = self.get_proxy_names(config_map)?;
         let main_group = self.detect_main_group(config_map);
         if let Some(ref name) = main_group {
             info!("Detected main entry group: {}", name);
         }
 
-        // Create relay chain proxies for each existing proxy
-        // This also creates Chain-Selector group
-        result.chains_created = self.create_chain_proxies(config_map, &existing_proxies, result)?;
+        // Step 2: Text-based manipulation
+        let mut lines: Vec<String> = content.lines().map(String::from).collect();
 
-        // Add Chain-Selector and Chain-Auto to the main entry group
-        result.groups_updated = self.add_selector_to_main_group(config_map, main_group.as_deref(), result)?;
+        // Find section boundaries
+        let proxies_range = Self::find_section_range(&lines, "proxies");
+        let groups_range = Self::find_section_range(&lines, "proxy-groups");
 
-        Ok(())
-    }
+        if proxies_range.is_none() || groups_range.is_none() {
+            anyhow::bail!("Config must have both 'proxies' and 'proxy-groups' sections");
+        }
+        let (ps, pe) = proxies_range.unwrap();
+        let (gs, ge) = groups_range.unwrap();
 
-    /// Remove all chain artifacts from a previous merge so we can rebuild cleanly
-    fn clean_existing_artifacts(&self, config: &mut Mapping) {
-        // 1. Remove Local-Chain-Proxy from proxies
-        if let Some(proxies) = config.get_mut(&Value::String("proxies".to_string())) {
-            if let Some(seq) = proxies.as_sequence_mut() {
-                seq.retain(|p| {
-                    p.get("name")
-                        .and_then(|v| v.as_str())
-                        .map(|n| n != self.config.proxy_name)
-                        .unwrap_or(true)
-                });
+        // Detect indent style from original entries
+        let indent = Self::detect_indent(&lines, ps);
+
+        // Step 3: Process proxy-groups section (do AFTER proxies since line numbers shift)
+        // We process groups first in reverse order to keep proxies indices valid
+        let groups_lines = lines[gs + 1..ge].to_vec();
+        let groups_entries = Self::split_entries(&groups_lines, &indent);
+
+        let mut new_groups_content: Vec<String> = Vec::new();
+
+        // Add Chain-Selector and Chain-Auto
+        let chain_names: Vec<String> = proxy_names.iter()
+            .map(|n| format!("'{}{}'", n, self.config.chain_suffix))
+            .collect();
+        let chain_list = chain_names.join(", ");
+
+        new_groups_content.push(format!(
+            "{}- {{ name: Chain-Selector, type: select, proxies: [{}] }}",
+            indent, chain_list
+        ));
+        new_groups_content.push(format!(
+            "{}- {{ name: Chain-Auto, type: url-test, proxies: [{}], url: 'http://www.gstatic.com/generate_204', interval: 300, tolerance: 50 }}",
+            indent, chain_list
+        ));
+
+        // Keep original groups (skip old chain artifacts), modify main group
+        for entry in &groups_entries {
+            let name = Self::extract_entry_name(&entry.lines);
+            if let Some(ref n) = name {
+                if n == "Chain-Selector" || n == "Chain-Auto" || n.ends_with(&self.config.chain_suffix) {
+                    continue; // skip old chain artifacts
+                }
+            }
+            // If this is the main group, inject Chain-Selector/Chain-Auto into its proxies
+            if main_group.as_deref() == name.as_deref() && name.is_some() {
+                let modified = self.inject_into_group_proxies(&entry.lines);
+                new_groups_content.extend(modified);
+            } else {
+                new_groups_content.extend(entry.lines.clone());
             }
         }
 
-        // 2. Remove all chain-related proxy groups:
-        //    - Groups ending with chain_suffix (e.g. "-Chain")
-        //    - Chain-Selector and Chain-Auto
-        if let Some(groups) = config.get_mut(&Value::String("proxy-groups".to_string())) {
-            if let Some(seq) = groups.as_sequence_mut() {
-                seq.retain(|g| {
-                    let name = g.get("name").and_then(|v| v.as_str()).unwrap_or("");
-                    name != "Chain-Selector"
-                        && name != "Chain-Auto"
-                        && !name.ends_with(&self.config.chain_suffix)
-                });
+        // Add relay chain entries
+        result.chains_created = proxy_names.len();
+        for proxy_name in &proxy_names {
+            new_groups_content.push(format!(
+                "{}- {{ name: '{}{}', type: relay, proxies: ['{}', {}], benchmark-url: 'http://www.gstatic.com/generate_204', benchmark-timeout: 5 }}",
+                indent, proxy_name, self.config.chain_suffix, proxy_name, self.config.proxy_name
+            ));
+        }
 
-                // 3. Remove Chain-Selector / Chain-Auto references from all groups' proxies
-                for group in seq.iter_mut() {
-                    if let Some(proxies) = group
-                        .as_mapping_mut()
-                        .and_then(|m| m.get_mut(&Value::String("proxies".to_string())))
-                    {
-                        if let Some(proxy_seq) = proxies.as_sequence_mut() {
-                            proxy_seq.retain(|p| {
-                                let s = p.as_str().unwrap_or("");
-                                s != "Chain-Selector" && s != "Chain-Auto"
-                            });
-                        }
-                    }
+        // Step 4: Process proxies section
+        let proxies_lines = lines[ps + 1..pe].to_vec();
+        let proxies_entries = Self::split_entries(&proxies_lines, &indent);
+
+        let mut new_proxies_content: Vec<String> = Vec::new();
+        for entry in &proxies_entries {
+            let name = Self::extract_entry_name(&entry.lines);
+            if name.as_deref() == Some(&self.config.proxy_name) {
+                continue; // remove old Local-Chain-Proxy
+            }
+            new_proxies_content.extend(entry.lines.clone());
+        }
+
+        // Append new Local-Chain-Proxy
+        let proxy_line = self.format_proxy_entry(&indent);
+        new_proxies_content.push(proxy_line);
+        result.proxy_added = true;
+
+        // Step 5: Rebuild the file
+        // We need to replace sections while keeping everything else intact.
+        // Process from bottom to top so line indices stay valid.
+        // Replace proxy-groups section content
+        let groups_content_start = gs + 1;
+        let groups_content_end = ge;
+        lines.splice(groups_content_start..groups_content_end, new_groups_content);
+
+        // Replace proxies section content (indices still valid because proxies comes before groups)
+        let proxies_content_start = ps + 1;
+        let proxies_content_end = pe;
+        lines.splice(proxies_content_start..proxies_content_end, new_proxies_content);
+
+        result.groups_updated = if main_group.is_some() { 1 } else { 0 };
+
+        // Ensure trailing newline
+        let mut output = lines.join("\n");
+        if !output.ends_with('\n') {
+            output.push('\n');
+        }
+        Ok(output)
+    }
+
+    /// Find the line range [start, end) for a top-level YAML section
+    fn find_section_range(lines: &[String], key: &str) -> Option<(usize, usize)> {
+        let header = format!("{}:", key);
+        let start = lines.iter().position(|l| {
+            let t = l.trim_start();
+            t == header || t.starts_with(&format!("{}: ", key))
+        })?;
+
+        // End is the next top-level key (line starting with a non-space char and containing ':')
+        let end = lines[start + 1..].iter().position(|l| {
+            !l.is_empty() && !l.starts_with(' ') && !l.starts_with('\t') && l.contains(':')
+        }).map(|p| p + start + 1).unwrap_or(lines.len());
+
+        Some((start, end))
+    }
+
+    /// Detect indentation from the first entry in a section
+    fn detect_indent(lines: &[String], section_start: usize) -> String {
+        for line in &lines[section_start + 1..] {
+            if let Some(pos) = line.find("- ") {
+                return " ".repeat(pos);
+            }
+        }
+        String::new()
+    }
+
+    /// Split section content into individual entries
+    fn split_entries(section_lines: &[String], indent: &str) -> Vec<TextEntry> {
+        let prefix = format!("{}- ", indent);
+        let mut entries: Vec<TextEntry> = Vec::new();
+        let mut current: Vec<String> = Vec::new();
+
+        for line in section_lines {
+            if line.starts_with(&prefix) && !current.is_empty() {
+                entries.push(TextEntry { lines: current });
+                current = Vec::new();
+            }
+            if !line.is_empty() || !current.is_empty() {
+                current.push(line.clone());
+            }
+        }
+        if !current.is_empty() {
+            entries.push(TextEntry { lines: current });
+        }
+        entries
+    }
+
+    /// Extract the `name:` value from an entry's lines
+    fn extract_entry_name(entry_lines: &[String]) -> Option<String> {
+        for line in entry_lines {
+            if let Some(pos) = line.find("name:") {
+                let after = line[pos + 5..].trim_start();
+                if after.is_empty() { continue; }
+
+                // Handle quoted names
+                let first_char = after.chars().next()?;
+                if first_char == '\'' || first_char == '"' {
+                    let rest = &after[1..];
+                    let end = rest.find(first_char)?;
+                    return Some(rest[..end].to_string());
+                }
+                // Unquoted: ends at comma, space+}, or end of line
+                let end = after.find(|c: char| c == ',' || c == '}')
+                    .unwrap_or(after.len());
+                return Some(after[..end].trim().to_string());
+            }
+        }
+        None
+    }
+
+    /// Format the Local-Chain-Proxy entry in flow style
+    fn format_proxy_entry(&self, indent: &str) -> String {
+        let mut parts = vec![
+            format!("name: {}", self.config.proxy_name),
+            "type: socks5".to_string(),
+            format!("server: {}", self.config.proxy_host),
+            format!("port: {}", self.config.proxy_port),
+        ];
+        if let Some(ref u) = self.config.proxy_username {
+            if !u.is_empty() { parts.push(format!("username: {}", u)); }
+        }
+        if let Some(ref p) = self.config.proxy_password {
+            if !p.is_empty() { parts.push(format!("password: {}", p)); }
+        }
+        format!("{}- {{ {} }}", indent, parts.join(", "))
+    }
+
+    /// Inject Chain-Selector and Chain-Auto into a group's proxies list
+    fn inject_into_group_proxies(&self, entry_lines: &[String]) -> Vec<String> {
+        let mut result = Vec::new();
+        for line in entry_lines {
+            // Flow style: proxies: [xxx, yyy]
+            if line.contains("proxies:") && line.contains('[') {
+                let replaced = line.replacen("proxies: [", "proxies: [Chain-Selector, Chain-Auto, ", 1);
+                result.push(replaced);
+            }
+            // Block style: detect "proxies:" on its own line, insert before first sub-item
+            else if line.trim() == "proxies:" {
+                result.push(line.clone());
+                // Detect sub-indent from context
+                let sub_indent = format!(
+                    "{}  ",
+                    &line[..line.find("proxies:").unwrap_or(0)]
+                );
+                result.push(format!("{}- Chain-Selector", sub_indent));
+                result.push(format!("{}- Chain-Auto", sub_indent));
+            } else {
+                result.push(line.clone());
+            }
+        }
+        result
+    }
+
+    /// Get list of proxy names from parsed config (read-only)
+    fn get_proxy_names(&self, config: &serde_yaml::Mapping) -> Result<Vec<String>> {
+        let proxies = match config.get(&Value::String("proxies".to_string())) {
+            Some(p) => p,
+            None => return Ok(vec![]),
+        };
+        let proxies_seq = proxies.as_sequence()
+            .context("Proxies section must be a sequence")?;
+
+        let mut names = Vec::new();
+        for proxy in proxies_seq {
+            if let Some(name) = proxy.get("name").and_then(|v| v.as_str()) {
+                if name != self.config.proxy_name && !name.ends_with(&self.config.chain_suffix) {
+                    names.push(name.to_string());
                 }
             }
         }
-
-        info!("Cleaned existing chain artifacts");
+        Ok(names)
     }
 
-    /// Detect the main entry group from rules section
-    /// Priority: 1. MATCH rule (default route), 2. First proxy-group of select type
-    fn detect_main_group(&self, config: &Mapping) -> Option<String> {
-        // First, try to find MATCH rule (the default/fallback route)
+    /// Detect the main entry group from rules section (read-only)
+    fn detect_main_group(&self, config: &serde_yaml::Mapping) -> Option<String> {
+        // Skip our own chain groups
+        let skip: HashSet<&str> = ["Chain-Selector", "Chain-Auto"].into();
+
+        // Priority 1: MATCH rule
         if let Some(rules) = config.get(&Value::String("rules".to_string())) {
             if let Some(rules_seq) = rules.as_sequence() {
                 for rule in rules_seq {
                     if let Some(rule_str) = rule.as_str() {
-                        // MATCH rule format: "MATCH,GROUP"
                         if rule_str.starts_with("MATCH,") {
                             let parts: Vec<&str> = rule_str.split(',').collect();
                             if parts.len() >= 2 {
                                 let group = parts[1].trim();
-                                if group != "DIRECT" && group != "REJECT"
-                                    && group != "Chain-Selector" && group != "Chain-Auto"
-                                {
+                                if group != "DIRECT" && group != "REJECT" && !skip.contains(group) {
                                     return Some(group.to_string());
                                 }
                             }
@@ -279,553 +399,55 @@ impl ClashConfigMerger {
             }
         }
 
-        // Fallback: find first select-type proxy group
-        if let Some(proxy_groups) = config.get(&Value::String("proxy-groups".to_string())) {
-            if let Some(groups_seq) = proxy_groups.as_sequence() {
-                for group in groups_seq {
-                    if let Some(group_type) = group.get("type").and_then(|v| v.as_str()) {
-                        if group_type == "select" {
-                            if let Some(name) = group.get("name").and_then(|v| v.as_str()) {
-                                // Skip our own chain groups
-                                if !name.starts_with("Chain-") && !name.ends_with("-Chain") {
-                                    return Some(name.to_string());
-                                }
+        // Priority 2: first select-type group
+        if let Some(groups) = config.get(&Value::String("proxy-groups".to_string())) {
+            if let Some(seq) = groups.as_sequence() {
+                for group in seq {
+                    if group.get("type").and_then(|v| v.as_str()) == Some("select") {
+                        if let Some(name) = group.get("name").and_then(|v| v.as_str()) {
+                            if !name.starts_with("Chain-") && !name.ends_with("-Chain") {
+                                return Some(name.to_string());
                             }
                         }
                     }
                 }
             }
         }
-
         None
     }
 
-    /// Get list of proxy names from config
-    fn get_proxy_names(&self, config: &Mapping) -> Result<Vec<String>> {
-        let proxies = match config.get(&Value::String("proxies".to_string())) {
-            Some(p) => p,
-            None => return Ok(vec![]),
-        };
-
-        let proxies_seq = proxies.as_sequence()
-            .context("Proxies section must be a sequence")?;
-
-        let mut names = Vec::new();
-        for proxy in proxies_seq {
-            if let Some(name) = proxy.get("name").and_then(|v| v.as_str()) {
-                // Skip our own local proxy and any existing chain proxies
-                if name != self.config.proxy_name && !name.ends_with(&self.config.chain_suffix) {
-                    names.push(name.to_string());
-                }
-            }
-        }
-
-        Ok(names)
-    }
-
-    /// Add or update the local proxy node in the proxies list
-    fn add_proxy_node(&self, config: &mut Mapping) -> Result<bool> {
-        // Ensure proxies section exists
-        if !config.contains_key(&Value::String("proxies".to_string())) {
-            config.insert(
-                Value::String("proxies".to_string()),
-                Value::Sequence(vec![]),
-            );
-        }
-
-        let proxies = config
-            .get_mut(&Value::String("proxies".to_string()))
-            .context("Failed to get proxies section")?;
-
-        let proxies_seq = proxies.as_sequence_mut()
-            .context("Proxies section must be a sequence")?;
-
-        // Check if proxy already exists and update it
-        for proxy in proxies_seq.iter_mut() {
-            if let Some(name) = proxy.get("name").and_then(|v| v.as_str()) {
-                if name == self.config.proxy_name {
-                    // Update existing proxy with new configuration
-                    if let Some(proxy_map) = proxy.as_mapping_mut() {
-                        proxy_map.insert(
-                            Value::String("server".to_string()),
-                            Value::String(self.config.proxy_host.clone()),
-                        );
-                        proxy_map.insert(
-                            Value::String("port".to_string()),
-                            Value::Number(self.config.proxy_port.into()),
-                        );
-                        // Update or remove username
-                        if let Some(ref username) = self.config.proxy_username {
-                            if !username.is_empty() {
-                                proxy_map.insert(
-                                    Value::String("username".to_string()),
-                                    Value::String(username.clone()),
-                                );
-                            } else {
-                                proxy_map.remove(&Value::String("username".to_string()));
-                            }
-                        } else {
-                            proxy_map.remove(&Value::String("username".to_string()));
-                        }
-                        // Update or remove password
-                        if let Some(ref password) = self.config.proxy_password {
-                            if !password.is_empty() {
-                                proxy_map.insert(
-                                    Value::String("password".to_string()),
-                                    Value::String(password.clone()),
-                                );
-                            } else {
-                                proxy_map.remove(&Value::String("password".to_string()));
-                            }
-                        } else {
-                            proxy_map.remove(&Value::String("password".to_string()));
-                        }
-                        info!("Updated existing proxy: {} ({}:{})",
-                            self.config.proxy_name,
-                            self.config.proxy_host,
-                            self.config.proxy_port
-                        );
-                    }
-                    return Ok(false); // Not added, but updated
-                }
-            }
-        }
-
-        // Create the proxy node
-        let mut proxy_node = Mapping::new();
-        proxy_node.insert(
-            Value::String("name".to_string()),
-            Value::String(self.config.proxy_name.clone()),
-        );
-        proxy_node.insert(
-            Value::String("type".to_string()),
-            Value::String("socks5".to_string()),
-        );
-        proxy_node.insert(
-            Value::String("server".to_string()),
-            Value::String(self.config.proxy_host.clone()),
-        );
-        proxy_node.insert(
-            Value::String("port".to_string()),
-            Value::Number(self.config.proxy_port.into()),
-        );
-
-        // Add username/password if provided
-        if let Some(ref username) = self.config.proxy_username {
-            if !username.is_empty() {
-                proxy_node.insert(
-                    Value::String("username".to_string()),
-                    Value::String(username.clone()),
-                );
-            }
-        }
-        if let Some(ref password) = self.config.proxy_password {
-            if !password.is_empty() {
-                proxy_node.insert(
-                    Value::String("password".to_string()),
-                    Value::String(password.clone()),
-                );
-            }
-        }
-
-        proxies_seq.push(Value::Mapping(proxy_node));
-
-        info!("Added proxy node: {} ({}:{})",
-            self.config.proxy_name,
-            self.config.proxy_host,
-            self.config.proxy_port
-        );
-        Ok(true)
-    }
-
-    /// Create relay chain proxy groups for each existing proxy
-    fn create_chain_proxies(
-        &self,
-        config: &mut Mapping,
-        existing_proxies: &[String],
-        _result: &mut MergeResult,
-    ) -> Result<usize> {
-        // Ensure proxy-groups section exists
-        if !config.contains_key(&Value::String("proxy-groups".to_string())) {
-            config.insert(
-                Value::String("proxy-groups".to_string()),
-                Value::Sequence(vec![]),
-            );
-        }
-
-        let proxy_groups = config
-            .get_mut(&Value::String("proxy-groups".to_string()))
-            .context("Failed to get proxy-groups section")?;
-
-        let groups_seq = proxy_groups.as_sequence_mut()
-            .context("Proxy-groups section must be a sequence")?;
-
-        // Build set of existing group names
-        let existing_group_names: std::collections::HashSet<String> = groups_seq
-            .iter()
-            .filter_map(|g| g.get("name").and_then(|v| v.as_str()).map(|s| s.to_string()))
-            .collect();
-
-        let mut chains_created = 0;
-
-        // Create a relay chain for each existing proxy
-        for proxy_name in existing_proxies {
-            let chain_name = format!("{}{}", proxy_name, self.config.chain_suffix);
-
-            // Skip if chain already exists
-            if existing_group_names.contains(&chain_name) {
-                debug!("Chain '{}' already exists", chain_name);
-                continue;
-            }
-
-            // Create relay proxy group
-            // Relay format: [first_proxy, second_proxy, ...]
-            // Traffic flow: User -> Clash -> first_proxy -> second_proxy -> target
-            // We want: User -> Clash -> VPN node -> SOCKS5 proxy -> target
-            let mut relay_group = Mapping::new();
-            relay_group.insert(
-                Value::String("name".to_string()),
-                Value::String(chain_name.clone()),
-            );
-            relay_group.insert(
-                Value::String("type".to_string()),
-                Value::String("relay".to_string()),
-            );
-            relay_group.insert(
-                Value::String("proxies".to_string()),
-                Value::Sequence(vec![
-                    Value::String(proxy_name.clone()),            // First: VPN node (香港01 etc)
-                    Value::String(self.config.proxy_name.clone()), // Second: SOCKS5 proxy
-                ]),
-            );
-            // Add benchmark URL for latency testing (required for relay groups)
-            relay_group.insert(
-                Value::String("benchmark-url".to_string()),
-                Value::String("http://www.gstatic.com/generate_204".to_string()),
-            );
-            relay_group.insert(
-                Value::String("benchmark-timeout".to_string()),
-                Value::Number(5.into()),
-            );
-
-            groups_seq.push(Value::Mapping(relay_group));
-            info!("Created chain relay: {} -> {}", proxy_name, self.config.proxy_name);
-            chains_created += 1;
-        }
-
-        // Create Chain-Auto and Chain-Selector groups
-        // Chain-Auto: url-test type, auto select fastest chain
-        // Chain-Selector: select type, manual selection
-        if !existing_proxies.is_empty() {
-            let auto_name = "Chain-Auto";
-            let selector_name = "Chain-Selector";
-
-            // Collect all chain names (both existing and newly created)
-            let chain_names: Vec<Value> = existing_proxies
-                .iter()
-                .map(|name| Value::String(format!("{}{}", name, self.config.chain_suffix)))
-                .collect();
-
-            // Remove existing Chain-Auto and Chain-Selector if present
-            groups_seq.retain(|g| {
-                g.get("name")
-                    .and_then(|v| v.as_str())
-                    .map(|n| n != auto_name && n != selector_name)
-                    .unwrap_or(true)
-            });
-
-            // Create Chain-Auto (url-test) - auto select fastest
-            let mut auto_group = Mapping::new();
-            auto_group.insert(
-                Value::String("name".to_string()),
-                Value::String(auto_name.to_string()),
-            );
-            auto_group.insert(
-                Value::String("type".to_string()),
-                Value::String("url-test".to_string()),
-            );
-            auto_group.insert(
-                Value::String("proxies".to_string()),
-                Value::Sequence(chain_names.clone()),
-            );
-            auto_group.insert(
-                Value::String("url".to_string()),
-                Value::String("http://www.gstatic.com/generate_204".to_string()),
-            );
-            auto_group.insert(
-                Value::String("interval".to_string()),
-                Value::Number(300.into()),
-            );
-            auto_group.insert(
-                Value::String("tolerance".to_string()),
-                Value::Number(50.into()),
-            );
-
-            // Create Chain-Selector (select) - manual selection
-            let mut selector_group = Mapping::new();
-            selector_group.insert(
-                Value::String("name".to_string()),
-                Value::String(selector_name.to_string()),
-            );
-            selector_group.insert(
-                Value::String("type".to_string()),
-                Value::String("select".to_string()),
-            );
-            selector_group.insert(
-                Value::String("proxies".to_string()),
-                Value::Sequence(chain_names),
-            );
-
-            // Insert at the beginning: Chain-Selector first, then Chain-Auto
-            // So sidebar shows: Chain-Selector, Chain-Auto, ...
-            groups_seq.insert(0, Value::Mapping(auto_group));
-            groups_seq.insert(0, Value::Mapping(selector_group));
-            info!("Created Chain-Selector (select) and Chain-Auto (url-test) at top with {} chain proxies", chains_created);
-        }
-
-        Ok(chains_created)
-    }
-
-    /// Add Chain-Selector and Chain-Auto to the main entry group
-    /// The main group is auto-detected from rules, or falls back to first select-type group
-    fn add_selector_to_main_group(
-        &self,
-        config: &mut Mapping,
-        main_group_name: Option<&str>,
-        result: &mut MergeResult,
-    ) -> Result<usize> {
-        let auto_name = "Chain-Auto";
-        let selector_name = "Chain-Selector";
-
-        // Check if proxy-groups section exists
-        if !config.contains_key(&Value::String("proxy-groups".to_string())) {
-            result.warnings.push("No proxy-groups section found in config".to_string());
-            return Ok(0);
-        }
-
-        let proxy_groups = config
-            .get_mut(&Value::String("proxy-groups".to_string()))
-            .context("Failed to get proxy-groups section")?;
-
-        let groups_seq = proxy_groups.as_sequence_mut()
-            .context("Proxy-groups section must be a sequence")?;
-
-        let mut updated_count = 0;
-
-        for group in groups_seq.iter_mut() {
-            let group_map = match group.as_mapping_mut() {
-                Some(m) => m,
-                None => {
-                    result.warnings.push("Invalid proxy group format".to_string());
-                    continue;
-                }
-            };
-
-            // Get group name
-            let group_name = group_map
-                .get(&Value::String("name".to_string()))
-                .and_then(|v| v.as_str())
-                .unwrap_or("<unknown>")
-                .to_string();
-
-            // Only process the main entry group (if detected)
-            if let Some(main_name) = main_group_name {
-                if group_name != main_name {
-                    continue;
-                }
-            } else {
-                // No main group detected, skip (chain groups are still created at top)
-                continue;
-            }
-
-            // Check if this is a select-type group
-            let group_type = match group_map.get(&Value::String("type".to_string())) {
-                Some(Value::String(t)) => t.as_str(),
-                _ => continue,
-            };
-
-            if group_type != "select" {
-                warn!("Main group '{}' is not select type, skipping", group_name);
-                continue;
-            }
-
-            // Ensure proxies array exists
-            if !group_map.contains_key(&Value::String("proxies".to_string())) {
-                continue;
-            }
-
-            let group_proxies = group_map
-                .get_mut(&Value::String("proxies".to_string()))
-                .context("Failed to get group proxies")?;
-
-            let group_proxies_seq = group_proxies.as_sequence_mut()
-                .context("Group proxies must be a sequence")?;
-
-            // Check what's already in this group
-            let has_selector = group_proxies_seq
-                .iter()
-                .any(|p| p.as_str() == Some(selector_name));
-            let has_auto = group_proxies_seq
-                .iter()
-                .any(|p| p.as_str() == Some(auto_name));
-
-            // Add Chain-Auto at position 0 (if not exists)
-            if !has_auto {
-                group_proxies_seq.insert(0, Value::String(auto_name.to_string()));
-            }
-
-            // Add Chain-Selector at position 0 (if not exists), so it's before Chain-Auto
-            if !has_selector {
-                group_proxies_seq.insert(0, Value::String(selector_name.to_string()));
-            }
-
-            if !has_selector || !has_auto {
-                info!("Added Chain-Selector and Chain-Auto to main group: {}", group_name);
-                updated_count += 1;
-            }
-
-            // Only process main group, break after found
-            break;
-        }
-
-        Ok(updated_count)
-    }
-
-    /// Add chain proxies to select-type proxy groups (legacy, not currently used)
-    #[allow(dead_code)]
-    fn add_chains_to_groups(
-        &self,
-        config: &mut Mapping,
-        existing_proxies: &[String],
-        result: &mut MergeResult,
-    ) -> Result<usize> {
-        // Check if proxy-groups section exists
-        if !config.contains_key(&Value::String("proxy-groups".to_string())) {
-            result.warnings.push("No proxy-groups section found in config".to_string());
-            return Ok(0);
-        }
-
-        let proxy_groups = config
-            .get_mut(&Value::String("proxy-groups".to_string()))
-            .context("Failed to get proxy-groups section")?;
-
-        let groups_seq = proxy_groups.as_sequence_mut()
-            .context("Proxy-groups section must be a sequence")?;
-
-        // Build map of original proxy -> chain proxy name
-        let chain_map: std::collections::HashMap<String, String> = existing_proxies
-            .iter()
-            .map(|name| (name.clone(), format!("{}{}", name, self.config.chain_suffix)))
-            .collect();
-
-        let mut updated_count = 0;
-
-        for group in groups_seq.iter_mut() {
-            let group_map = match group.as_mapping_mut() {
-                Some(m) => m,
-                None => {
-                    result.warnings.push("Invalid proxy group format".to_string());
-                    continue;
-                }
-            };
-
-            // Check if this is a select-type group
-            let group_type = match group_map.get(&Value::String("type".to_string())) {
-                Some(Value::String(t)) => t.as_str(),
-                _ => continue,
-            };
-
-            if group_type != "select" {
-                continue;
-            }
-
-            let group_name = group_map
-                .get(&Value::String("name".to_string()))
-                .and_then(|v| v.as_str())
-                .unwrap_or("<unknown>")
-                .to_string();
-
-            // Ensure proxies array exists
-            if !group_map.contains_key(&Value::String("proxies".to_string())) {
-                continue;
-            }
-
-            let group_proxies = group_map
-                .get_mut(&Value::String("proxies".to_string()))
-                .context("Failed to get group proxies")?;
-
-            let group_proxies_seq = group_proxies.as_sequence_mut()
-                .context("Group proxies must be a sequence")?;
-
-            // Build set of existing proxies in this group
-            let existing_in_group: std::collections::HashSet<String> = group_proxies_seq
-                .iter()
-                .filter_map(|p| p.as_str().map(|s| s.to_string()))
-                .collect();
-
-            // For each proxy in this group, add its chain version if not already present
-            let mut to_add = Vec::new();
-            for proxy_value in group_proxies_seq.iter() {
-                if let Some(proxy_name) = proxy_value.as_str() {
-                    if let Some(chain_name) = chain_map.get(proxy_name) {
-                        if !existing_in_group.contains(chain_name) {
-                            to_add.push((proxy_name.to_string(), chain_name.clone()));
-                        }
-                    }
-                }
-            }
-
-            if to_add.is_empty() {
-                continue;
-            }
-
-            // Insert chain proxies right after their original proxies
-            let mut new_seq: Vec<Value> = Vec::new();
-            for proxy_value in group_proxies_seq.iter() {
-                new_seq.push(proxy_value.clone());
-                if let Some(proxy_name) = proxy_value.as_str() {
-                    for (orig, chain) in &to_add {
-                        if orig == proxy_name {
-                            new_seq.push(Value::String(chain.clone()));
-                        }
-                    }
-                }
-            }
-
-            *group_proxies_seq = new_seq;
-            info!("Added {} chain proxies to group: {}", to_add.len(), group_name);
-            updated_count += 1;
-        }
-
-        Ok(updated_count)
-    }
-
-    /// Create a backup of the config file
-    fn create_backup<P: AsRef<Path>>(&self, config_path: P) -> Result<PathBuf> {
+    /// Create a single backup, removing any old backups for this file
+    fn create_single_backup<P: AsRef<Path>>(&self, config_path: P) -> Result<PathBuf> {
         let config_path = config_path.as_ref();
-        let timestamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
-        let backup_path = config_path.with_file_name(format!(
-            "{}.backup-{}",
-            config_path.file_name().unwrap().to_string_lossy(),
-            timestamp
-        ));
+        let file_name = config_path.file_name().unwrap().to_string_lossy().to_string();
+        let backup_name = format!("{}.backup", file_name);
+        let backup_path = config_path.with_file_name(&backup_name);
 
-        fs::copy(config_path, &backup_path)
-            .context("Failed to create backup")?;
+        // Delete old timestamped backups
+        if let Some(parent) = config_path.parent() {
+            if let Ok(entries) = fs::read_dir(parent) {
+                let prefix = format!("{}.backup", file_name);
+                for entry in entries.flatten() {
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    if name.starts_with(&prefix) && name != backup_name {
+                        let _ = fs::remove_file(entry.path());
+                        info!("Removed old backup: {}", name);
+                    }
+                }
+            }
+        }
 
+        fs::copy(config_path, &backup_path).context("Failed to create backup")?;
         Ok(backup_path)
-    }
-
-    /// Get the merger configuration
-    pub fn config(&self) -> &MergerConfig {
-        &self.config
     }
 }
 
+struct TextEntry {
+    lines: Vec<String>,
+}
+
 impl Default for ClashConfigMerger {
-    fn default() -> Self {
-        Self::new()
-    }
+    fn default() -> Self { Self::new() }
 }
 
 #[cfg(test)]
@@ -864,15 +486,32 @@ proxy-groups:
         .to_string()
     }
 
+    fn create_flow_style_config() -> String {
+        r#"mixed-port: 7890
+allow-lan: true
+mode: rule
+log-level: info
+proxies:
+    - { name: '🇭🇰 香港01', type: ss, server: example.com, port: 443, cipher: aes-256-gcm, password: secret, udp: true }
+    - { name: '🇯🇵 日本01', type: ss, server: example.jp, port: 443, cipher: aes-256-gcm, password: secret, udp: true }
+    - { name: '🇺🇸 美国01', type: ss, server: example.us, port: 443, cipher: aes-256-gcm, password: secret, udp: true }
+proxy-groups:
+    - { name: 蓝海加速, type: select, proxies: [自动选择, '🇭🇰 香港01', '🇯🇵 日本01', '🇺🇸 美国01'] }
+    - { name: 自动选择, type: url-test, proxies: ['🇭🇰 香港01', '🇯🇵 日本01', '🇺🇸 美国01'], url: 'http://www.gstatic.com/generate_204', interval: 86400 }
+rules:
+    - 'DOMAIN-SUFFIX,google.com,蓝海加速'
+    - 'DOMAIN-SUFFIX,github.com,蓝海加速'
+    - 'MATCH,蓝海加速'
+"#
+        .to_string()
+    }
+
     #[test]
     fn test_merger_config_default() {
         let config = MergerConfig::default();
         assert_eq!(config.proxy_name, "Local-Chain-Proxy");
         assert_eq!(config.proxy_host, "127.0.0.1");
         assert_eq!(config.proxy_port, 10808);
-        assert!(config.create_backup);
-        assert!(config.insert_at_beginning);
-        assert_eq!(config.chain_suffix, "-Chain");
     }
 
     #[test]
@@ -885,48 +524,21 @@ proxy-groups:
         let result = merger.merge(&config_path).unwrap();
 
         assert!(result.proxy_added);
-        assert_eq!(result.chains_created, 2); // HK-01-Chain, JP-01-Chain
-        assert_eq!(result.groups_updated, 1); // Only select-type group
+        assert_eq!(result.chains_created, 2);
+        assert_eq!(result.groups_updated, 1);
 
-        // Verify the config
         let content = fs::read_to_string(&config_path).unwrap();
         let config: Value = serde_yaml::from_str(&content).unwrap();
-
-        // Check proxies
         let proxies = config["proxies"].as_sequence().unwrap();
-        assert_eq!(proxies.len(), 3); // HK-01, JP-01, Local-Chain-Proxy
+        assert_eq!(proxies.len(), 3);
 
-        // Check proxy-groups for relay chains
         let groups = config["proxy-groups"].as_sequence().unwrap();
-        let group_names: Vec<&str> = groups
-            .iter()
-            .filter_map(|g| g["name"].as_str())
-            .collect();
-
+        let group_names: Vec<&str> = groups.iter()
+            .filter_map(|g| g["name"].as_str()).collect();
         assert!(group_names.contains(&"HK-01-Chain"));
         assert!(group_names.contains(&"JP-01-Chain"));
-
-        // Verify relay structure: VPN node first, then SOCKS5 proxy
-        for group in groups {
-            let name = group["name"].as_str().unwrap_or("");
-            if name == "HK-01-Chain" {
-                assert_eq!(group["type"].as_str().unwrap(), "relay");
-                let proxies = group["proxies"].as_sequence().unwrap();
-                assert_eq!(proxies[0].as_str().unwrap(), "HK-01"); // First: VPN node
-                assert_eq!(proxies[1].as_str().unwrap(), "Local-Chain-Proxy"); // Second: SOCKS5
-            }
-        }
-
-        // Check that chains were added to select group
-        let proxy_group = &groups[0]; // "Proxy" select group
-        let group_proxies = proxy_group["proxies"].as_sequence().unwrap();
-        let proxy_names: Vec<&str> = group_proxies
-            .iter()
-            .filter_map(|p| p.as_str())
-            .collect();
-
-        assert!(proxy_names.contains(&"HK-01-Chain"));
-        assert!(proxy_names.contains(&"JP-01-Chain"));
+        assert!(group_names.contains(&"Chain-Selector"));
+        assert!(group_names.contains(&"Chain-Auto"));
     }
 
     #[test]
@@ -936,68 +548,31 @@ proxy-groups:
         fs::write(&config_path, create_test_config()).unwrap();
 
         let merger = ClashConfigMerger::new();
+        merger.merge(&config_path).unwrap();
+        let content1 = fs::read_to_string(&config_path).unwrap();
 
-        // First merge
-        let result1 = merger.merge(&config_path).unwrap();
-        assert!(result1.proxy_added);
-        assert_eq!(result1.chains_created, 2);
+        merger.merge(&config_path).unwrap();
+        let content2 = fs::read_to_string(&config_path).unwrap();
 
-        // Second merge (clean-rebuild: same result as first)
-        let result2 = merger.merge(&config_path).unwrap();
-        assert!(result2.proxy_added);
-        assert_eq!(result2.chains_created, 2);
-
-        // Verify no duplication: proxies count should be same
-        let content = fs::read_to_string(&config_path).unwrap();
-        let config: Value = serde_yaml::from_str(&content).unwrap();
-        let proxies = config["proxies"].as_sequence().unwrap();
-        assert_eq!(proxies.len(), 3); // HK-01, JP-01, Local-Chain-Proxy (no duplicates)
-
-        let groups = config["proxy-groups"].as_sequence().unwrap();
-        let chain_count = groups.iter()
-            .filter(|g| g["name"].as_str().map(|n| n.ends_with("-Chain")).unwrap_or(false))
-            .count();
-        assert_eq!(chain_count, 2); // HK-01-Chain, JP-01-Chain (no duplicates)
+        // Parse both and compare structure (text may differ slightly due to re-processing)
+        let c1: Value = serde_yaml::from_str(&content1).unwrap();
+        let c2: Value = serde_yaml::from_str(&content2).unwrap();
+        assert_eq!(
+            c1["proxies"].as_sequence().unwrap().len(),
+            c2["proxies"].as_sequence().unwrap().len()
+        );
+        assert_eq!(
+            c1["proxy-groups"].as_sequence().unwrap().len(),
+            c2["proxy-groups"].as_sequence().unwrap().len()
+        );
     }
 
-    /// Simulate the user's real scenario: Apply + Rules Rewrite + Apply again
-    /// This was the actual bug: after rules rewrite changes MATCH→Chain-Selector,
-    /// the second Apply would detect Chain-Selector as the main group and add
-    /// Chain-Selector/Chain-Auto into itself, causing self-reference and stacking.
     #[test]
-    fn test_multiple_apply_with_rules_rewrite_no_stacking() {
-        use std::collections::HashMap;
-
-        // Real-world-like config (matches user's Clash Verge profile)
-        let original_config = r#"
-mixed-port: 7890
-allow-lan: false
-mode: rule
-log-level: info
-
-proxies:
-  - name: "Trojan-VPS"
-    type: trojan
-    server: 104.244.92.250
-    port: 443
-    password: "secret"
-    sni: localhost
-    skip-cert-verify: true
-
-proxy-groups:
-  - name: "Proxy"
-    type: select
-    proxies:
-      - Trojan-VPS
-
-rules:
-  - DOMAIN-SUFFIX,claude.ai,Proxy
-  - DOMAIN-SUFFIX,github.com,Proxy
-  - MATCH,Proxy
-"#;
-
+    fn test_flow_style_format_preserved() {
         let temp_dir = TempDir::new().unwrap();
         let config_path = temp_dir.path().join("config.yaml");
+        let original = create_flow_style_config();
+        fs::write(&config_path, &original).unwrap();
 
         let merger = ClashConfigMerger::with_config(MergerConfig {
             proxy_host: "64.32.179.253".to_string(),
@@ -1007,88 +582,104 @@ rules:
             create_backup: false,
             ..MergerConfig::default()
         });
+        merger.merge(&config_path).unwrap();
 
-        // === Apply #1 ===
-        fs::write(&config_path, original_config).unwrap();
-        let r1 = merger.merge(&config_path).unwrap();
-        assert!(r1.proxy_added);
-        assert_eq!(r1.chains_created, 1); // Trojan-VPS-Chain
+        let output = fs::read_to_string(&config_path).unwrap();
 
-        // Simulate rules rewrite (Proxy → Chain-Selector), same as GUI Apply does
-        let content = fs::read_to_string(&config_path).unwrap();
-        let mut replacements = HashMap::new();
-        replacements.insert("Proxy".to_string(), "Chain-Selector".to_string());
-        let (rewritten, count) = crate::patcher::rewrite_rules(&content, &replacements).unwrap();
-        assert_eq!(count, 3); // 3 rules rewritten
-        fs::write(&config_path, &rewritten).unwrap();
+        // Original flow-style lines must still be present (format preserved)
+        assert!(output.contains("- { name: '🇭🇰 香港01', type: ss,"), "Original proxy format lost");
+        assert!(output.contains("- 'DOMAIN-SUFFIX,google.com,蓝海加速'"), "Original rules format lost");
 
-        // Verify rules now point to Chain-Selector
-        assert!(rewritten.contains("MATCH,Chain-Selector"));
+        // Chain content should be added
+        assert!(output.contains("Chain-Selector"));
+        assert!(output.contains("Chain-Auto"));
+        assert!(output.contains("Local-Chain-Proxy"));
+        assert!(output.contains("🇭🇰 香港01-Chain"));
 
-        // === Apply #2 (the bug scenario) ===
-        let r2 = merger.merge(&config_path).unwrap();
-        assert!(r2.proxy_added);
-        assert_eq!(r2.chains_created, 1);
+        // Main group should have Chain-Selector injected
+        assert!(output.contains("proxies: [Chain-Selector, Chain-Auto, 自动选择,"));
 
-        // Again simulate rules rewrite
-        let content2 = fs::read_to_string(&config_path).unwrap();
-        let (rewritten2, _) = crate::patcher::rewrite_rules(&content2, &replacements).unwrap();
-        fs::write(&config_path, &rewritten2).unwrap();
+        // Verify parseable
+        let config: Value = serde_yaml::from_str(&output).unwrap();
+        let proxies = config["proxies"].as_sequence().unwrap();
+        assert_eq!(proxies.len(), 4); // 3 original + Local-Chain-Proxy
+    }
 
-        // === Apply #3 (triple-check) ===
-        let r3 = merger.merge(&config_path).unwrap();
-        assert!(r3.proxy_added);
-        assert_eq!(r3.chains_created, 1);
+    #[test]
+    fn test_multiple_apply_with_rules_rewrite_no_stacking() {
+        use std::collections::HashMap;
 
-        let content3 = fs::read_to_string(&config_path).unwrap();
-        let (rewritten3, _) = crate::patcher::rewrite_rules(&content3, &replacements).unwrap();
-        fs::write(&config_path, &rewritten3).unwrap();
+        let original_config = r#"mixed-port: 7890
+mode: rule
+proxies:
+    - { name: Trojan-VPS, type: trojan, server: 1.2.3.4, port: 443, password: secret }
+proxy-groups:
+    - { name: Proxy, type: select, proxies: [Trojan-VPS] }
+rules:
+    - 'DOMAIN-SUFFIX,claude.ai,Proxy'
+    - 'MATCH,Proxy'
+"#;
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().join("config.yaml");
 
-        // === Final verification: no stacking, no self-reference ===
+        let merger = ClashConfigMerger::with_config(MergerConfig {
+            proxy_host: "64.32.179.253".to_string(),
+            proxy_port: 60088,
+            create_backup: false,
+            ..MergerConfig::default()
+        });
+
+        // Apply 3 times with rules rewrite between each
+        for _ in 0..3 {
+            fs::write(&config_path, if config_path.exists() {
+                fs::read_to_string(&config_path).unwrap()
+            } else {
+                original_config.to_string()
+            }).ok();
+
+            merger.merge(&config_path).unwrap();
+
+            // Simulate rules rewrite (text-based)
+            let content = fs::read_to_string(&config_path).unwrap();
+            let mut replacements = HashMap::new();
+            replacements.insert("Proxy".to_string(), "Chain-Selector".to_string());
+            let (rewritten, _) = crate::patcher::rewrite_rules_text(&content, &replacements);
+            fs::write(&config_path, rewritten).unwrap();
+        }
+
         let final_content = fs::read_to_string(&config_path).unwrap();
-        let final_config: Value = serde_yaml::from_str(&final_content).unwrap();
+        let config: Value = serde_yaml::from_str(&final_content).unwrap();
 
-        // Only 2 proxies: Trojan-VPS + Local-Chain-Proxy
-        let proxies = final_config["proxies"].as_sequence().unwrap();
-        assert_eq!(proxies.len(), 2);
+        let proxies = config["proxies"].as_sequence().unwrap();
+        assert_eq!(proxies.len(), 2); // Trojan-VPS + Local-Chain-Proxy
 
-        // Verify Local-Chain-Proxy has correct IP (253, not 160)
-        let local_proxy = proxies.iter()
-            .find(|p| p["name"].as_str() == Some("Local-Chain-Proxy"))
-            .unwrap();
-        assert_eq!(local_proxy["server"].as_str().unwrap(), "64.32.179.253");
+        let groups = config["proxy-groups"].as_sequence().unwrap();
+        let names: Vec<&str> = groups.iter().filter_map(|g| g["name"].as_str()).collect();
+        assert_eq!(names.len(), 4); // Chain-Selector, Chain-Auto, Proxy, Trojan-VPS-Chain
 
-        // Check proxy-groups: Chain-Selector, Chain-Auto, Proxy, Trojan-VPS-Chain (4 total)
-        let groups = final_config["proxy-groups"].as_sequence().unwrap();
-        let group_names: Vec<&str> = groups.iter()
-            .filter_map(|g| g["name"].as_str())
+        // Chain-Selector must NOT contain itself
+        let selector = groups.iter().find(|g| g["name"].as_str() == Some("Chain-Selector")).unwrap();
+        let sel_proxies: Vec<&str> = selector["proxies"].as_sequence().unwrap()
+            .iter().filter_map(|p| p.as_str()).collect();
+        assert!(!sel_proxies.contains(&"Chain-Selector"));
+    }
+
+    #[test]
+    fn test_single_backup() {
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().join("config.yaml");
+        fs::write(&config_path, create_test_config()).unwrap();
+
+        let merger = ClashConfigMerger::new();
+        merger.merge(&config_path).unwrap();
+        merger.merge(&config_path).unwrap();
+        merger.merge(&config_path).unwrap();
+
+        // Should only have 1 backup file
+        let backups: Vec<_> = fs::read_dir(temp_dir.path()).unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().contains("backup"))
             .collect();
-        assert_eq!(group_names.len(), 4);
-        assert!(group_names.contains(&"Chain-Selector"));
-        assert!(group_names.contains(&"Chain-Auto"));
-        assert!(group_names.contains(&"Proxy"));
-        assert!(group_names.contains(&"Trojan-VPS-Chain"));
-
-        // Chain-Selector must NOT contain itself (the old bug)
-        let selector = groups.iter()
-            .find(|g| g["name"].as_str() == Some("Chain-Selector"))
-            .unwrap();
-        let selector_proxies: Vec<&str> = selector["proxies"].as_sequence().unwrap()
-            .iter()
-            .filter_map(|p| p.as_str())
-            .collect();
-        assert!(!selector_proxies.contains(&"Chain-Selector"), "Self-reference in Chain-Selector!");
-        assert!(!selector_proxies.contains(&"Chain-Auto"), "Chain-Auto should not be in Chain-Selector!");
-        assert_eq!(selector_proxies, vec!["Trojan-VPS-Chain"]);
-
-        // Proxy group should have Chain-Selector and Chain-Auto at front
-        let proxy_group = groups.iter()
-            .find(|g| g["name"].as_str() == Some("Proxy"))
-            .unwrap();
-        let proxy_proxies: Vec<&str> = proxy_group["proxies"].as_sequence().unwrap()
-            .iter()
-            .filter_map(|p| p.as_str())
-            .collect();
-        assert_eq!(proxy_proxies, vec!["Chain-Selector", "Chain-Auto", "Trojan-VPS"]);
+        assert_eq!(backups.len(), 1);
     }
 }

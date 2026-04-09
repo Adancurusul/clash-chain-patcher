@@ -232,22 +232,15 @@ fn apply_rule_rewrites(config_path: &PathBuf, replacements: &HashMap<String, Str
         println!("  {} -> {}", from, to);
     }
 
-    match patcher::rewrite_rules(&content, replacements) {
-        Ok((output, count)) => {
-            if count > 0 {
-                std::fs::write(config_path, output).unwrap_or_else(|e| {
-                    eprintln!("Error: Failed to write config: {}", e);
-                    process::exit(1);
-                });
-                println!("  Rewritten: {} rules", count);
-            } else {
-                println!("  No rules matched for rewrite.");
-            }
-        }
-        Err(e) => {
-            eprintln!("Error: Rules rewrite failed: {}", e);
+    let (output, count) = patcher::rewrite_rules_text(&content, replacements);
+    if count > 0 {
+        std::fs::write(config_path, output).unwrap_or_else(|e| {
+            eprintln!("Error: Failed to write config: {}", e);
             process::exit(1);
-        }
+        });
+        println!("  Rewritten: {} rules", count);
+    } else {
+        println!("  No rules matched for rewrite.");
     }
 }
 
