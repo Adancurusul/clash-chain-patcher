@@ -183,6 +183,9 @@ impl ClashConfigMerger {
         let config_map = config.as_mapping_mut()
             .context("Config root must be a YAML mapping")?;
 
+        // Clean all existing chain artifacts first (idempotent re-apply)
+        self.clean_existing_artifacts(config_map);
+
         // Add local proxy node
         result.proxy_added = self.add_proxy_node(config_map)?;
 
@@ -205,6 +208,52 @@ impl ClashConfigMerger {
         Ok(())
     }
 
+    /// Remove all chain artifacts from a previous merge so we can rebuild cleanly
+    fn clean_existing_artifacts(&self, config: &mut Mapping) {
+        // 1. Remove Local-Chain-Proxy from proxies
+        if let Some(proxies) = config.get_mut(&Value::String("proxies".to_string())) {
+            if let Some(seq) = proxies.as_sequence_mut() {
+                seq.retain(|p| {
+                    p.get("name")
+                        .and_then(|v| v.as_str())
+                        .map(|n| n != self.config.proxy_name)
+                        .unwrap_or(true)
+                });
+            }
+        }
+
+        // 2. Remove all chain-related proxy groups:
+        //    - Groups ending with chain_suffix (e.g. "-Chain")
+        //    - Chain-Selector and Chain-Auto
+        if let Some(groups) = config.get_mut(&Value::String("proxy-groups".to_string())) {
+            if let Some(seq) = groups.as_sequence_mut() {
+                seq.retain(|g| {
+                    let name = g.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                    name != "Chain-Selector"
+                        && name != "Chain-Auto"
+                        && !name.ends_with(&self.config.chain_suffix)
+                });
+
+                // 3. Remove Chain-Selector / Chain-Auto references from all groups' proxies
+                for group in seq.iter_mut() {
+                    if let Some(proxies) = group
+                        .as_mapping_mut()
+                        .and_then(|m| m.get_mut(&Value::String("proxies".to_string())))
+                    {
+                        if let Some(proxy_seq) = proxies.as_sequence_mut() {
+                            proxy_seq.retain(|p| {
+                                let s = p.as_str().unwrap_or("");
+                                s != "Chain-Selector" && s != "Chain-Auto"
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        info!("Cleaned existing chain artifacts");
+    }
+
     /// Detect the main entry group from rules section
     /// Priority: 1. MATCH rule (default route), 2. First proxy-group of select type
     fn detect_main_group(&self, config: &Mapping) -> Option<String> {
@@ -218,7 +267,9 @@ impl ClashConfigMerger {
                             let parts: Vec<&str> = rule_str.split(',').collect();
                             if parts.len() >= 2 {
                                 let group = parts[1].trim();
-                                if group != "DIRECT" && group != "REJECT" {
+                                if group != "DIRECT" && group != "REJECT"
+                                    && group != "Chain-Selector" && group != "Chain-Auto"
+                                {
                                     return Some(group.to_string());
                                 }
                             }
@@ -891,10 +942,153 @@ proxy-groups:
         assert!(result1.proxy_added);
         assert_eq!(result1.chains_created, 2);
 
-        // Second merge (should be no-op)
+        // Second merge (clean-rebuild: same result as first)
         let result2 = merger.merge(&config_path).unwrap();
-        assert!(!result2.proxy_added);
-        assert_eq!(result2.chains_created, 0);
-        assert_eq!(result2.groups_updated, 0);
+        assert!(result2.proxy_added);
+        assert_eq!(result2.chains_created, 2);
+
+        // Verify no duplication: proxies count should be same
+        let content = fs::read_to_string(&config_path).unwrap();
+        let config: Value = serde_yaml::from_str(&content).unwrap();
+        let proxies = config["proxies"].as_sequence().unwrap();
+        assert_eq!(proxies.len(), 3); // HK-01, JP-01, Local-Chain-Proxy (no duplicates)
+
+        let groups = config["proxy-groups"].as_sequence().unwrap();
+        let chain_count = groups.iter()
+            .filter(|g| g["name"].as_str().map(|n| n.ends_with("-Chain")).unwrap_or(false))
+            .count();
+        assert_eq!(chain_count, 2); // HK-01-Chain, JP-01-Chain (no duplicates)
+    }
+
+    /// Simulate the user's real scenario: Apply + Rules Rewrite + Apply again
+    /// This was the actual bug: after rules rewrite changes MATCH→Chain-Selector,
+    /// the second Apply would detect Chain-Selector as the main group and add
+    /// Chain-Selector/Chain-Auto into itself, causing self-reference and stacking.
+    #[test]
+    fn test_multiple_apply_with_rules_rewrite_no_stacking() {
+        use std::collections::HashMap;
+
+        // Real-world-like config (matches user's Clash Verge profile)
+        let original_config = r#"
+mixed-port: 7890
+allow-lan: false
+mode: rule
+log-level: info
+
+proxies:
+  - name: "Trojan-VPS"
+    type: trojan
+    server: 104.244.92.250
+    port: 443
+    password: "secret"
+    sni: localhost
+    skip-cert-verify: true
+
+proxy-groups:
+  - name: "Proxy"
+    type: select
+    proxies:
+      - Trojan-VPS
+
+rules:
+  - DOMAIN-SUFFIX,claude.ai,Proxy
+  - DOMAIN-SUFFIX,github.com,Proxy
+  - MATCH,Proxy
+"#;
+
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().join("config.yaml");
+
+        let merger = ClashConfigMerger::with_config(MergerConfig {
+            proxy_host: "64.32.179.253".to_string(),
+            proxy_port: 60088,
+            proxy_username: Some("testuser".to_string()),
+            proxy_password: Some("testpass".to_string()),
+            create_backup: false,
+            ..MergerConfig::default()
+        });
+
+        // === Apply #1 ===
+        fs::write(&config_path, original_config).unwrap();
+        let r1 = merger.merge(&config_path).unwrap();
+        assert!(r1.proxy_added);
+        assert_eq!(r1.chains_created, 1); // Trojan-VPS-Chain
+
+        // Simulate rules rewrite (Proxy → Chain-Selector), same as GUI Apply does
+        let content = fs::read_to_string(&config_path).unwrap();
+        let mut replacements = HashMap::new();
+        replacements.insert("Proxy".to_string(), "Chain-Selector".to_string());
+        let (rewritten, count) = crate::patcher::rewrite_rules(&content, &replacements).unwrap();
+        assert_eq!(count, 3); // 3 rules rewritten
+        fs::write(&config_path, &rewritten).unwrap();
+
+        // Verify rules now point to Chain-Selector
+        assert!(rewritten.contains("MATCH,Chain-Selector"));
+
+        // === Apply #2 (the bug scenario) ===
+        let r2 = merger.merge(&config_path).unwrap();
+        assert!(r2.proxy_added);
+        assert_eq!(r2.chains_created, 1);
+
+        // Again simulate rules rewrite
+        let content2 = fs::read_to_string(&config_path).unwrap();
+        let (rewritten2, _) = crate::patcher::rewrite_rules(&content2, &replacements).unwrap();
+        fs::write(&config_path, &rewritten2).unwrap();
+
+        // === Apply #3 (triple-check) ===
+        let r3 = merger.merge(&config_path).unwrap();
+        assert!(r3.proxy_added);
+        assert_eq!(r3.chains_created, 1);
+
+        let content3 = fs::read_to_string(&config_path).unwrap();
+        let (rewritten3, _) = crate::patcher::rewrite_rules(&content3, &replacements).unwrap();
+        fs::write(&config_path, &rewritten3).unwrap();
+
+        // === Final verification: no stacking, no self-reference ===
+        let final_content = fs::read_to_string(&config_path).unwrap();
+        let final_config: Value = serde_yaml::from_str(&final_content).unwrap();
+
+        // Only 2 proxies: Trojan-VPS + Local-Chain-Proxy
+        let proxies = final_config["proxies"].as_sequence().unwrap();
+        assert_eq!(proxies.len(), 2);
+
+        // Verify Local-Chain-Proxy has correct IP (253, not 160)
+        let local_proxy = proxies.iter()
+            .find(|p| p["name"].as_str() == Some("Local-Chain-Proxy"))
+            .unwrap();
+        assert_eq!(local_proxy["server"].as_str().unwrap(), "64.32.179.253");
+
+        // Check proxy-groups: Chain-Selector, Chain-Auto, Proxy, Trojan-VPS-Chain (4 total)
+        let groups = final_config["proxy-groups"].as_sequence().unwrap();
+        let group_names: Vec<&str> = groups.iter()
+            .filter_map(|g| g["name"].as_str())
+            .collect();
+        assert_eq!(group_names.len(), 4);
+        assert!(group_names.contains(&"Chain-Selector"));
+        assert!(group_names.contains(&"Chain-Auto"));
+        assert!(group_names.contains(&"Proxy"));
+        assert!(group_names.contains(&"Trojan-VPS-Chain"));
+
+        // Chain-Selector must NOT contain itself (the old bug)
+        let selector = groups.iter()
+            .find(|g| g["name"].as_str() == Some("Chain-Selector"))
+            .unwrap();
+        let selector_proxies: Vec<&str> = selector["proxies"].as_sequence().unwrap()
+            .iter()
+            .filter_map(|p| p.as_str())
+            .collect();
+        assert!(!selector_proxies.contains(&"Chain-Selector"), "Self-reference in Chain-Selector!");
+        assert!(!selector_proxies.contains(&"Chain-Auto"), "Chain-Auto should not be in Chain-Selector!");
+        assert_eq!(selector_proxies, vec!["Trojan-VPS-Chain"]);
+
+        // Proxy group should have Chain-Selector and Chain-Auto at front
+        let proxy_group = groups.iter()
+            .find(|g| g["name"].as_str() == Some("Proxy"))
+            .unwrap();
+        let proxy_proxies: Vec<&str> = proxy_group["proxies"].as_sequence().unwrap()
+            .iter()
+            .filter_map(|p| p.as_str())
+            .collect();
+        assert_eq!(proxy_proxies, vec!["Chain-Selector", "Chain-Auto", "Trojan-VPS"]);
     }
 }

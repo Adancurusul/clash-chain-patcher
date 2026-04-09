@@ -242,11 +242,11 @@ proxy-groups:
         assert!(merge_result.proxy_added); // Should add on first time
         assert!(merge_result.groups_updated > 0); // Should have updated proxy groups
 
-        // Second merge, proxy should already exist
+        // Second merge (clean-rebuild: proxy re-added, no duplicates)
         let result2 = bridge.merge(&config_path);
         assert!(result2.is_ok());
         let merge_result2 = result2.unwrap();
-        assert!(!merge_result2.proxy_added); // Should not add duplicates
+        assert!(merge_result2.proxy_added); // Clean-rebuild always re-adds
 
         // Cleanup
         let _ = fs::remove_file(config_path);

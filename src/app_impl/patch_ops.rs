@@ -77,32 +77,23 @@ impl App {
             return;
         };
 
-        // Get enabled proxies from pool
-        let enabled_proxies: Vec<_> = state.list_upstreams()
-            .into_iter()
-            .filter(|p| p.enabled)
-            .collect();
+        // Use the proxy currently shown in the form (user's selection)
+        let form_proxy = match self.get_proxy_from_form() {
+            Some(p) => p,
+            None => {
+                self.clear_logs(cx);
+                self.add_log(cx, "✗ Fill proxy info in the form first");
+                self.set_status(cx, "No proxy");
+                self.update_log_display(cx);
+                self.ui.redraw(cx);
+                return;
+            }
+        };
 
-        if enabled_proxies.is_empty() {
-            self.clear_logs(cx);
-            self.add_log(cx, "✗ No enabled proxies in pool");
-            self.add_log(cx, "");
-            self.add_log(cx, "Please add SOCKS5 proxy to Proxy Pool:");
-            self.add_log(cx, "1. Fill Host/Port/User/Pass fields");
-            self.add_log(cx, "2. Click '+ Add' button");
-            self.add_log(cx, "3. Ensure proxy has ✓ (enabled)");
-            self.set_status(cx, "No proxy");
-            self.update_log_display(cx);
-            self.ui.redraw(cx);
-            return;
-        }
-
-        // Use first enabled proxy for the chain
-        let first_proxy = &enabled_proxies[0];
-        let proxy_host = first_proxy.config.host.clone();
-        let proxy_port = first_proxy.config.port;
-        let proxy_username = first_proxy.config.username.clone();
-        let proxy_password = first_proxy.config.password.clone();
+        let proxy_host = form_proxy.host.clone();
+        let proxy_port = form_proxy.port;
+        let proxy_username = form_proxy.username.clone();
+        let proxy_password = form_proxy.password.clone();
 
         // Extract config path
         let config_path = state.clash_config_path()
@@ -126,7 +117,7 @@ impl App {
         self.clear_logs(cx);
         self.add_log(cx, "⏳ Applying configuration...");
         self.add_log(cx, &format!("  Using proxy: {}:{}", proxy_host, proxy_port));
-        self.add_log(cx, &format!("  {} enabled proxies in pool", enabled_proxies.len()));
+        self.add_log(cx, &format!("  Proxy from form: {}:{}", proxy_host, proxy_port));
         self.set_status(cx, "Applying...");
         self.update_log_display(cx);
 
