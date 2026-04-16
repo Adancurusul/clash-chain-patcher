@@ -4,6 +4,7 @@
 
 use crate::bridge::{ConfigBridge, HealthBridge, MergerBridge, WatcherBridge};
 use crate::config::UpstreamProxy;
+use crate::patcher::CustomRuleSet;
 use std::path::PathBuf;
 
 /// Proxy-related application state
@@ -309,6 +310,42 @@ impl ProxyState {
             .as_ref()
             .ok_or("Config bridge not initialized")?
             .remove_recent_file(index)
+            .map_err(|e| e.to_string())
+    }
+
+    // ===== Custom rule preset management =====
+
+    /// Check if presets have been seeded
+    pub fn presets_seeded(&self) -> bool {
+        self.config_bridge
+            .as_ref()
+            .map(|bridge| bridge.presets_seeded())
+            .unwrap_or(false)
+    }
+
+    /// Mark presets as seeded
+    pub fn set_presets_seeded(&self) -> Result<(), String> {
+        self.config_bridge
+            .as_ref()
+            .ok_or("Config bridge not initialized")?
+            .set_presets_seeded()
+            .map_err(|e| e.to_string())
+    }
+
+    /// Get all custom rule presets
+    pub fn get_custom_rule_presets(&self) -> Vec<CustomRuleSet> {
+        self.config_bridge
+            .as_ref()
+            .map(|bridge| bridge.get_custom_rule_presets())
+            .unwrap_or_default()
+    }
+
+    /// Save all custom rule presets
+    pub fn save_custom_rule_presets(&self, presets: Vec<CustomRuleSet>) -> Result<(), String> {
+        self.config_bridge
+            .as_ref()
+            .ok_or("Config bridge not initialized")?
+            .save_custom_rule_presets(presets)
             .map_err(|e| e.to_string())
     }
 }

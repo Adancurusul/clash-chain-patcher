@@ -3,6 +3,7 @@
 //! These modules contain impl App blocks for different functional areas,
 //! keeping the main app.rs smaller and more organized.
 
+pub mod custom_rules_ops;
 pub mod file_ops;
 pub mod health_ops;
 pub mod patch_ops;

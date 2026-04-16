@@ -220,17 +220,16 @@ impl ClashConfigMerger {
         result.proxy_added = true;
 
         // Step 5: Rebuild the file
-        // We need to replace sections while keeping everything else intact.
-        // Process from bottom to top so line indices stay valid.
-        // Replace proxy-groups section content
-        let groups_content_start = gs + 1;
-        let groups_content_end = ge;
-        lines.splice(groups_content_start..groups_content_end, new_groups_content);
-
-        // Replace proxies section content (indices still valid because proxies comes before groups)
-        let proxies_content_start = ps + 1;
-        let proxies_content_end = pe;
-        lines.splice(proxies_content_start..proxies_content_end, new_proxies_content);
+        // Splice the LATER section first so earlier indices stay valid.
+        if ps < gs {
+            // proxies before groups (common case)
+            lines.splice(gs + 1..ge, new_groups_content);
+            lines.splice(ps + 1..pe, new_proxies_content);
+        } else {
+            // groups before proxies (uncommon but valid YAML)
+            lines.splice(ps + 1..pe, new_proxies_content);
+            lines.splice(gs + 1..ge, new_groups_content);
+        }
 
         result.groups_updated = if main_group.is_some() { 1 } else { 0 };
 
@@ -251,8 +250,13 @@ impl ClashConfigMerger {
         })?;
 
         // End is the next top-level key (line starting with a non-space char and containing ':')
+        // Must exclude YAML list entries (starting with "- ") which are section content, not headers
         let end = lines[start + 1..].iter().position(|l| {
-            !l.is_empty() && !l.starts_with(' ') && !l.starts_with('\t') && l.contains(':')
+            !l.is_empty()
+                && !l.starts_with(' ')
+                && !l.starts_with('\t')
+                && !l.starts_with("- ")
+                && l.contains(':')
         }).map(|p| p + start + 1).unwrap_or(lines.len());
 
         Some((start, end))
@@ -292,7 +296,18 @@ impl ClashConfigMerger {
     /// Extract the `name:` value from an entry's lines
     fn extract_entry_name(entry_lines: &[String]) -> Option<String> {
         for line in entry_lines {
-            if let Some(pos) = line.find("name:") {
+            // Match "name:" as a standalone key, not as part of "hostname:" etc.
+            // Valid positions: start of line, after "- ", after "{ ", or after whitespace
+            let pos = line.find("name:").and_then(|p| {
+                if p == 0 { return Some(p); }
+                let before = line.as_bytes()[p - 1];
+                if before == b' ' || before == b'-' || before == b'{' || before == b'\t' {
+                    Some(p)
+                } else {
+                    None
+                }
+            });
+            if let Some(pos) = pos {
                 let after = line[pos + 5..].trim_start();
                 if after.is_empty() { continue; }
 
@@ -332,26 +347,44 @@ impl ClashConfigMerger {
     /// Inject Chain-Selector and Chain-Auto into a group's proxies list
     fn inject_into_group_proxies(&self, entry_lines: &[String]) -> Vec<String> {
         let mut result = Vec::new();
-        for line in entry_lines {
+        let mut proxies_line_seen = false;
+
+        for (i, line) in entry_lines.iter().enumerate() {
             // Flow style: proxies: [xxx, yyy]
             if line.contains("proxies:") && line.contains('[') {
                 let replaced = line.replacen("proxies: [", "proxies: [Chain-Selector, Chain-Auto, ", 1);
                 result.push(replaced);
+                continue;
             }
-            // Block style: detect "proxies:" on its own line, insert before first sub-item
-            else if line.trim() == "proxies:" {
+            // Block style: detect "proxies:" on its own line
+            if line.trim() == "proxies:" {
                 result.push(line.clone());
-                // Detect sub-indent from context
-                let sub_indent = format!(
-                    "{}  ",
-                    &line[..line.find("proxies:").unwrap_or(0)]
-                );
+                proxies_line_seen = true;
+
+                // Detect actual sub-indent from the NEXT line (the first existing proxy entry)
+                let sub_indent = entry_lines[i + 1..]
+                    .iter()
+                    .find(|l| l.trim().starts_with("- "))
+                    .map(|l| {
+                        let trimmed = l.trim_start();
+                        &l[..l.len() - trimmed.len()]
+                    })
+                    .unwrap_or_else(|| {
+                        // Fallback: same indent as "proxies:" line
+                        let prefix_len = line.find("proxies:").unwrap_or(0);
+                        &line[..prefix_len]
+                    })
+                    .to_string();
+
                 result.push(format!("{}- Chain-Selector", sub_indent));
                 result.push(format!("{}- Chain-Auto", sub_indent));
-            } else {
-                result.push(line.clone());
+                continue;
             }
+            result.push(line.clone());
         }
+
+        // If proxies: line was not found at all (shouldn't happen), return as-is
+        let _ = proxies_line_seen;
         result
     }
 

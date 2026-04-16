@@ -1,6 +1,6 @@
 [package]
 name = "clash-chain-patcher"
-version = "0.3.2"
+version = "0.4.0"
 edition = "2021"
 authors = ["Clash Chain Patcher"]
 description = "A GUI & CLI tool to add SOCKS5 proxy chains to Clash configurations"

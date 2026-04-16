@@ -52,6 +52,8 @@ impl App {
 
                 // Parse rule groups for Rules Rewrite panel
                 self.refresh_rule_groups(cx);
+                // Update available targets for Custom Rules panel
+                self.refresh_available_targets(cx);
 
                 self.ui.redraw(cx);
             }

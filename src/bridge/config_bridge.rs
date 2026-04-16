@@ -3,6 +3,7 @@
 //! Provides synchronous access interface to ConfigManager for GUI components
 
 use crate::config::{ConfigManager, UpstreamProxy};
+use crate::patcher::CustomRuleSet;
 use super::{BridgeError, BridgeResult};
 use std::sync::Arc;
 use tokio::runtime::Runtime;
@@ -139,6 +140,40 @@ impl ConfigBridge {
         self.runtime.block_on(async {
             let mut manager = self.manager.write().await;
             manager.remove_recent_file(index)
+                .map_err(|e| BridgeError::Config(e.to_string()))
+        })
+    }
+
+    /// Get all custom rule presets
+    pub fn get_custom_rule_presets(&self) -> Vec<CustomRuleSet> {
+        self.runtime.block_on(async {
+            let manager = self.manager.read().await;
+            manager.get_custom_rule_presets().to_vec()
+        })
+    }
+
+    /// Check if presets have been seeded
+    pub fn presets_seeded(&self) -> bool {
+        self.runtime.block_on(async {
+            let manager = self.manager.read().await;
+            manager.presets_seeded()
+        })
+    }
+
+    /// Mark presets as seeded
+    pub fn set_presets_seeded(&self) -> BridgeResult<()> {
+        self.runtime.block_on(async {
+            let mut manager = self.manager.write().await;
+            manager.set_presets_seeded()
+                .map_err(|e| BridgeError::Config(e.to_string()))
+        })
+    }
+
+    /// Replace all custom rule presets
+    pub fn save_custom_rule_presets(&self, presets: Vec<CustomRuleSet>) -> BridgeResult<()> {
+        self.runtime.block_on(async {
+            let mut manager = self.manager.write().await;
+            manager.save_custom_rule_presets(presets)
                 .map_err(|e| BridgeError::Config(e.to_string()))
         })
     }

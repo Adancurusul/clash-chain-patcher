@@ -14,7 +14,7 @@
 //! - ui_helpers.rs: UI & Logging Helpers
 
 use makepad_widgets::*;
-use clash_chain_patcher::patcher::RuleGroup;
+use clash_chain_patcher::patcher::{RuleGroup, RuleMatchType, CustomRule, CustomRuleSet};
 use clash_chain_patcher::state::ProxyState;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -609,6 +609,217 @@ live_design! {
                         }
                     }
 
+                    // Custom Rules (collapsible)
+                    <View> {
+                        width: Fill,
+                        height: Fit,
+                        padding: 8,
+                        flow: Down,
+                        spacing: 4,
+                        show_bg: true,
+                        draw_bg: {color: #333333}
+
+                        // Header row
+                        <View> {
+                            width: Fill, height: Fit, flow: Right, spacing: 6, align: {y: 0.5},
+                            <Label> { text: "Custom Rules", draw_text: {color: #ffffff, text_style: {font_size: 11.0}} }
+                            toggle_custom_rules_btn = <Button> {
+                                width: Fit, height: Fit,
+                                padding: {left: 8, right: 8, top: 4, bottom: 4},
+                                text: "▼"
+                                draw_text: {color: #ffffff, text_style: {font_size: 10.0}}
+                                draw_bg: { fn pixel(self) -> vec4 { return mix(#555555, #777777, self.hover); } }
+                            }
+                            <View> { width: Fill, height: Fit }
+                            custom_rules_stats_label = <Label> { text: "0 rules", draw_text: {color: #888888, text_style: {font_size: 9.0}} }
+                        }
+
+                        // Collapsible content
+                        custom_rules_panel = <View> {
+                            visible: false,
+                            width: Fill, height: Fit, flow: Down, spacing: 4, padding: {top: 2},
+
+                            // Input row 1: domain
+                            <View> { width: Fill, height: Fit, flow: Right, spacing: 4, align: {y: 0.5},
+                                <Label> { width: 55, text: "Domain", draw_text: {color: #ffffff, text_style: {font_size: 10.0}} }
+                                custom_rule_domain_input = <TextInput> {
+                                    width: Fill, height: 24,
+                                    empty_text: "lark.com or lark,feishu"
+                                    draw_text: {color: #ffffff, text_style: {font_size: 10.0}}
+                                    draw_bg: {color: #555555}
+                                }
+                            }
+                            // Input row 2: type + target + add
+                            <View> { width: Fill, height: Fit, flow: Right, spacing: 4, align: {y: 0.5},
+                                <Label> { width: 55, text: "Type", draw_text: {color: #ffffff, text_style: {font_size: 10.0}} }
+                                custom_rule_type_btn = <Button> {
+                                    width: 110, height: 24, text: "SUFFIX",
+                                    draw_text: {color: #aaccff, text_style: {font_size: 9.0}}
+                                    draw_bg: { fn pixel(self) -> vec4 { return mix(#3a3a3a, #555555, self.hover); } }
+                                }
+                                <Label> { width: 40, text: "Target", draw_text: {color: #ffffff, text_style: {font_size: 10.0}} }
+                                custom_rule_target_btn = <Button> {
+                                    width: 110, height: 24, text: "DIRECT",
+                                    draw_text: {color: #aaccff, text_style: {font_size: 9.0}}
+                                    draw_bg: { fn pixel(self) -> vec4 { return mix(#3a3a3a, #555555, self.hover); } }
+                                }
+                                custom_rule_add_btn = <Button> {
+                                    width: Fit, height: 24,
+                                    padding: {left: 10, right: 10},
+                                    text: "+ Add"
+                                    draw_text: {color: #00ff88, text_style: {font_size: 10.0}}
+                                    draw_bg: { fn pixel(self) -> vec4 { return mix(#2a4a2a, #3a6a3a, self.hover); } }
+                                }
+                            }
+
+                            // Custom rule slots (1-15)
+                            cr_slot_1 = <View> { visible: false, width: Fill, height: Fit, flow: Right, spacing: 4, align: {y: 0.5}, padding: {left: 4, right: 4, top: 2, bottom: 2}, show_bg: true, draw_bg: {color: #2a2a2a}
+                                cr_check_1 = <Button> { width: 20, height: 20, text: "✓", draw_text: {color: #00ff88, text_style: {font_size: 10.0}}, draw_bg: { fn pixel(self) -> vec4 { return mix(#2a2a2a, #3a3a3a, self.hover); } } }
+                                cr_type_1 = <Label> { width: 65, text: "", draw_text: {color: #888888, text_style: {font_size: 8.0}} }
+                                cr_domain_1 = <Label> { width: Fill, text: "", draw_text: {color: #ffffff, text_style: {font_size: 9.0}} }
+                                cr_target_1 = <Label> { width: 100, text: "", draw_text: {color: #aaccff, text_style: {font_size: 9.0}} }
+                                cr_delete_1 = <Button> { width: 20, height: 20, text: "×", draw_text: {color: #ff4444, text_style: {font_size: 12.0}}, draw_bg: { fn pixel(self) -> vec4 { return mix(#2a2a2a, #553333, self.hover); } } }
+                            }
+                            cr_slot_2 = <View> { visible: false, width: Fill, height: Fit, flow: Right, spacing: 4, align: {y: 0.5}, padding: {left: 4, right: 4, top: 2, bottom: 2}, show_bg: true, draw_bg: {color: #2a2a2a}
+                                cr_check_2 = <Button> { width: 20, height: 20, text: "✓", draw_text: {color: #00ff88, text_style: {font_size: 10.0}}, draw_bg: { fn pixel(self) -> vec4 { return mix(#2a2a2a, #3a3a3a, self.hover); } } }
+                                cr_type_2 = <Label> { width: 65, text: "", draw_text: {color: #888888, text_style: {font_size: 8.0}} }
+                                cr_domain_2 = <Label> { width: Fill, text: "", draw_text: {color: #ffffff, text_style: {font_size: 9.0}} }
+                                cr_target_2 = <Label> { width: 100, text: "", draw_text: {color: #aaccff, text_style: {font_size: 9.0}} }
+                                cr_delete_2 = <Button> { width: 20, height: 20, text: "×", draw_text: {color: #ff4444, text_style: {font_size: 12.0}}, draw_bg: { fn pixel(self) -> vec4 { return mix(#2a2a2a, #553333, self.hover); } } }
+                            }
+                            cr_slot_3 = <View> { visible: false, width: Fill, height: Fit, flow: Right, spacing: 4, align: {y: 0.5}, padding: {left: 4, right: 4, top: 2, bottom: 2}, show_bg: true, draw_bg: {color: #2a2a2a}
+                                cr_check_3 = <Button> { width: 20, height: 20, text: "✓", draw_text: {color: #00ff88, text_style: {font_size: 10.0}}, draw_bg: { fn pixel(self) -> vec4 { return mix(#2a2a2a, #3a3a3a, self.hover); } } }
+                                cr_type_3 = <Label> { width: 65, text: "", draw_text: {color: #888888, text_style: {font_size: 8.0}} }
+                                cr_domain_3 = <Label> { width: Fill, text: "", draw_text: {color: #ffffff, text_style: {font_size: 9.0}} }
+                                cr_target_3 = <Label> { width: 100, text: "", draw_text: {color: #aaccff, text_style: {font_size: 9.0}} }
+                                cr_delete_3 = <Button> { width: 20, height: 20, text: "×", draw_text: {color: #ff4444, text_style: {font_size: 12.0}}, draw_bg: { fn pixel(self) -> vec4 { return mix(#2a2a2a, #553333, self.hover); } } }
+                            }
+                            cr_slot_4 = <View> { visible: false, width: Fill, height: Fit, flow: Right, spacing: 4, align: {y: 0.5}, padding: {left: 4, right: 4, top: 2, bottom: 2}, show_bg: true, draw_bg: {color: #2a2a2a}
+                                cr_check_4 = <Button> { width: 20, height: 20, text: "✓", draw_text: {color: #00ff88, text_style: {font_size: 10.0}}, draw_bg: { fn pixel(self) -> vec4 { return mix(#2a2a2a, #3a3a3a, self.hover); } } }
+                                cr_type_4 = <Label> { width: 65, text: "", draw_text: {color: #888888, text_style: {font_size: 8.0}} }
+                                cr_domain_4 = <Label> { width: Fill, text: "", draw_text: {color: #ffffff, text_style: {font_size: 9.0}} }
+                                cr_target_4 = <Label> { width: 100, text: "", draw_text: {color: #aaccff, text_style: {font_size: 9.0}} }
+                                cr_delete_4 = <Button> { width: 20, height: 20, text: "×", draw_text: {color: #ff4444, text_style: {font_size: 12.0}}, draw_bg: { fn pixel(self) -> vec4 { return mix(#2a2a2a, #553333, self.hover); } } }
+                            }
+                            cr_slot_5 = <View> { visible: false, width: Fill, height: Fit, flow: Right, spacing: 4, align: {y: 0.5}, padding: {left: 4, right: 4, top: 2, bottom: 2}, show_bg: true, draw_bg: {color: #2a2a2a}
+                                cr_check_5 = <Button> { width: 20, height: 20, text: "✓", draw_text: {color: #00ff88, text_style: {font_size: 10.0}}, draw_bg: { fn pixel(self) -> vec4 { return mix(#2a2a2a, #3a3a3a, self.hover); } } }
+                                cr_type_5 = <Label> { width: 65, text: "", draw_text: {color: #888888, text_style: {font_size: 8.0}} }
+                                cr_domain_5 = <Label> { width: Fill, text: "", draw_text: {color: #ffffff, text_style: {font_size: 9.0}} }
+                                cr_target_5 = <Label> { width: 100, text: "", draw_text: {color: #aaccff, text_style: {font_size: 9.0}} }
+                                cr_delete_5 = <Button> { width: 20, height: 20, text: "×", draw_text: {color: #ff4444, text_style: {font_size: 12.0}}, draw_bg: { fn pixel(self) -> vec4 { return mix(#2a2a2a, #553333, self.hover); } } }
+                            }
+                            cr_slot_6 = <View> { visible: false, width: Fill, height: Fit, flow: Right, spacing: 4, align: {y: 0.5}, padding: {left: 4, right: 4, top: 2, bottom: 2}, show_bg: true, draw_bg: {color: #2a2a2a}
+                                cr_check_6 = <Button> { width: 20, height: 20, text: "✓", draw_text: {color: #00ff88, text_style: {font_size: 10.0}}, draw_bg: { fn pixel(self) -> vec4 { return mix(#2a2a2a, #3a3a3a, self.hover); } } }
+                                cr_type_6 = <Label> { width: 65, text: "", draw_text: {color: #888888, text_style: {font_size: 8.0}} }
+                                cr_domain_6 = <Label> { width: Fill, text: "", draw_text: {color: #ffffff, text_style: {font_size: 9.0}} }
+                                cr_target_6 = <Label> { width: 100, text: "", draw_text: {color: #aaccff, text_style: {font_size: 9.0}} }
+                                cr_delete_6 = <Button> { width: 20, height: 20, text: "×", draw_text: {color: #ff4444, text_style: {font_size: 12.0}}, draw_bg: { fn pixel(self) -> vec4 { return mix(#2a2a2a, #553333, self.hover); } } }
+                            }
+                            cr_slot_7 = <View> { visible: false, width: Fill, height: Fit, flow: Right, spacing: 4, align: {y: 0.5}, padding: {left: 4, right: 4, top: 2, bottom: 2}, show_bg: true, draw_bg: {color: #2a2a2a}
+                                cr_check_7 = <Button> { width: 20, height: 20, text: "✓", draw_text: {color: #00ff88, text_style: {font_size: 10.0}}, draw_bg: { fn pixel(self) -> vec4 { return mix(#2a2a2a, #3a3a3a, self.hover); } } }
+                                cr_type_7 = <Label> { width: 65, text: "", draw_text: {color: #888888, text_style: {font_size: 8.0}} }
+                                cr_domain_7 = <Label> { width: Fill, text: "", draw_text: {color: #ffffff, text_style: {font_size: 9.0}} }
+                                cr_target_7 = <Label> { width: 100, text: "", draw_text: {color: #aaccff, text_style: {font_size: 9.0}} }
+                                cr_delete_7 = <Button> { width: 20, height: 20, text: "×", draw_text: {color: #ff4444, text_style: {font_size: 12.0}}, draw_bg: { fn pixel(self) -> vec4 { return mix(#2a2a2a, #553333, self.hover); } } }
+                            }
+                            cr_slot_8 = <View> { visible: false, width: Fill, height: Fit, flow: Right, spacing: 4, align: {y: 0.5}, padding: {left: 4, right: 4, top: 2, bottom: 2}, show_bg: true, draw_bg: {color: #2a2a2a}
+                                cr_check_8 = <Button> { width: 20, height: 20, text: "✓", draw_text: {color: #00ff88, text_style: {font_size: 10.0}}, draw_bg: { fn pixel(self) -> vec4 { return mix(#2a2a2a, #3a3a3a, self.hover); } } }
+                                cr_type_8 = <Label> { width: 65, text: "", draw_text: {color: #888888, text_style: {font_size: 8.0}} }
+                                cr_domain_8 = <Label> { width: Fill, text: "", draw_text: {color: #ffffff, text_style: {font_size: 9.0}} }
+                                cr_target_8 = <Label> { width: 100, text: "", draw_text: {color: #aaccff, text_style: {font_size: 9.0}} }
+                                cr_delete_8 = <Button> { width: 20, height: 20, text: "×", draw_text: {color: #ff4444, text_style: {font_size: 12.0}}, draw_bg: { fn pixel(self) -> vec4 { return mix(#2a2a2a, #553333, self.hover); } } }
+                            }
+                            cr_slot_9 = <View> { visible: false, width: Fill, height: Fit, flow: Right, spacing: 4, align: {y: 0.5}, padding: {left: 4, right: 4, top: 2, bottom: 2}, show_bg: true, draw_bg: {color: #2a2a2a}
+                                cr_check_9 = <Button> { width: 20, height: 20, text: "✓", draw_text: {color: #00ff88, text_style: {font_size: 10.0}}, draw_bg: { fn pixel(self) -> vec4 { return mix(#2a2a2a, #3a3a3a, self.hover); } } }
+                                cr_type_9 = <Label> { width: 65, text: "", draw_text: {color: #888888, text_style: {font_size: 8.0}} }
+                                cr_domain_9 = <Label> { width: Fill, text: "", draw_text: {color: #ffffff, text_style: {font_size: 9.0}} }
+                                cr_target_9 = <Label> { width: 100, text: "", draw_text: {color: #aaccff, text_style: {font_size: 9.0}} }
+                                cr_delete_9 = <Button> { width: 20, height: 20, text: "×", draw_text: {color: #ff4444, text_style: {font_size: 12.0}}, draw_bg: { fn pixel(self) -> vec4 { return mix(#2a2a2a, #553333, self.hover); } } }
+                            }
+                            cr_slot_10 = <View> { visible: false, width: Fill, height: Fit, flow: Right, spacing: 4, align: {y: 0.5}, padding: {left: 4, right: 4, top: 2, bottom: 2}, show_bg: true, draw_bg: {color: #2a2a2a}
+                                cr_check_10 = <Button> { width: 20, height: 20, text: "✓", draw_text: {color: #00ff88, text_style: {font_size: 10.0}}, draw_bg: { fn pixel(self) -> vec4 { return mix(#2a2a2a, #3a3a3a, self.hover); } } }
+                                cr_type_10 = <Label> { width: 65, text: "", draw_text: {color: #888888, text_style: {font_size: 8.0}} }
+                                cr_domain_10 = <Label> { width: Fill, text: "", draw_text: {color: #ffffff, text_style: {font_size: 9.0}} }
+                                cr_target_10 = <Label> { width: 100, text: "", draw_text: {color: #aaccff, text_style: {font_size: 9.0}} }
+                                cr_delete_10 = <Button> { width: 20, height: 20, text: "×", draw_text: {color: #ff4444, text_style: {font_size: 12.0}}, draw_bg: { fn pixel(self) -> vec4 { return mix(#2a2a2a, #553333, self.hover); } } }
+                            }
+                            cr_slot_11 = <View> { visible: false, width: Fill, height: Fit, flow: Right, spacing: 4, align: {y: 0.5}, padding: {left: 4, right: 4, top: 2, bottom: 2}, show_bg: true, draw_bg: {color: #2a2a2a}
+                                cr_check_11 = <Button> { width: 20, height: 20, text: "✓", draw_text: {color: #00ff88, text_style: {font_size: 10.0}}, draw_bg: { fn pixel(self) -> vec4 { return mix(#2a2a2a, #3a3a3a, self.hover); } } }
+                                cr_type_11 = <Label> { width: 65, text: "", draw_text: {color: #888888, text_style: {font_size: 8.0}} }
+                                cr_domain_11 = <Label> { width: Fill, text: "", draw_text: {color: #ffffff, text_style: {font_size: 9.0}} }
+                                cr_target_11 = <Label> { width: 100, text: "", draw_text: {color: #aaccff, text_style: {font_size: 9.0}} }
+                                cr_delete_11 = <Button> { width: 20, height: 20, text: "×", draw_text: {color: #ff4444, text_style: {font_size: 12.0}}, draw_bg: { fn pixel(self) -> vec4 { return mix(#2a2a2a, #553333, self.hover); } } }
+                            }
+                            cr_slot_12 = <View> { visible: false, width: Fill, height: Fit, flow: Right, spacing: 4, align: {y: 0.5}, padding: {left: 4, right: 4, top: 2, bottom: 2}, show_bg: true, draw_bg: {color: #2a2a2a}
+                                cr_check_12 = <Button> { width: 20, height: 20, text: "✓", draw_text: {color: #00ff88, text_style: {font_size: 10.0}}, draw_bg: { fn pixel(self) -> vec4 { return mix(#2a2a2a, #3a3a3a, self.hover); } } }
+                                cr_type_12 = <Label> { width: 65, text: "", draw_text: {color: #888888, text_style: {font_size: 8.0}} }
+                                cr_domain_12 = <Label> { width: Fill, text: "", draw_text: {color: #ffffff, text_style: {font_size: 9.0}} }
+                                cr_target_12 = <Label> { width: 100, text: "", draw_text: {color: #aaccff, text_style: {font_size: 9.0}} }
+                                cr_delete_12 = <Button> { width: 20, height: 20, text: "×", draw_text: {color: #ff4444, text_style: {font_size: 12.0}}, draw_bg: { fn pixel(self) -> vec4 { return mix(#2a2a2a, #553333, self.hover); } } }
+                            }
+                            cr_slot_13 = <View> { visible: false, width: Fill, height: Fit, flow: Right, spacing: 4, align: {y: 0.5}, padding: {left: 4, right: 4, top: 2, bottom: 2}, show_bg: true, draw_bg: {color: #2a2a2a}
+                                cr_check_13 = <Button> { width: 20, height: 20, text: "✓", draw_text: {color: #00ff88, text_style: {font_size: 10.0}}, draw_bg: { fn pixel(self) -> vec4 { return mix(#2a2a2a, #3a3a3a, self.hover); } } }
+                                cr_type_13 = <Label> { width: 65, text: "", draw_text: {color: #888888, text_style: {font_size: 8.0}} }
+                                cr_domain_13 = <Label> { width: Fill, text: "", draw_text: {color: #ffffff, text_style: {font_size: 9.0}} }
+                                cr_target_13 = <Label> { width: 100, text: "", draw_text: {color: #aaccff, text_style: {font_size: 9.0}} }
+                                cr_delete_13 = <Button> { width: 20, height: 20, text: "×", draw_text: {color: #ff4444, text_style: {font_size: 12.0}}, draw_bg: { fn pixel(self) -> vec4 { return mix(#2a2a2a, #553333, self.hover); } } }
+                            }
+                            cr_slot_14 = <View> { visible: false, width: Fill, height: Fit, flow: Right, spacing: 4, align: {y: 0.5}, padding: {left: 4, right: 4, top: 2, bottom: 2}, show_bg: true, draw_bg: {color: #2a2a2a}
+                                cr_check_14 = <Button> { width: 20, height: 20, text: "✓", draw_text: {color: #00ff88, text_style: {font_size: 10.0}}, draw_bg: { fn pixel(self) -> vec4 { return mix(#2a2a2a, #3a3a3a, self.hover); } } }
+                                cr_type_14 = <Label> { width: 65, text: "", draw_text: {color: #888888, text_style: {font_size: 8.0}} }
+                                cr_domain_14 = <Label> { width: Fill, text: "", draw_text: {color: #ffffff, text_style: {font_size: 9.0}} }
+                                cr_target_14 = <Label> { width: 100, text: "", draw_text: {color: #aaccff, text_style: {font_size: 9.0}} }
+                                cr_delete_14 = <Button> { width: 20, height: 20, text: "×", draw_text: {color: #ff4444, text_style: {font_size: 12.0}}, draw_bg: { fn pixel(self) -> vec4 { return mix(#2a2a2a, #553333, self.hover); } } }
+                            }
+                            cr_slot_15 = <View> { visible: false, width: Fill, height: Fit, flow: Right, spacing: 4, align: {y: 0.5}, padding: {left: 4, right: 4, top: 2, bottom: 2}, show_bg: true, draw_bg: {color: #2a2a2a}
+                                cr_check_15 = <Button> { width: 20, height: 20, text: "✓", draw_text: {color: #00ff88, text_style: {font_size: 10.0}}, draw_bg: { fn pixel(self) -> vec4 { return mix(#2a2a2a, #3a3a3a, self.hover); } } }
+                                cr_type_15 = <Label> { width: 65, text: "", draw_text: {color: #888888, text_style: {font_size: 8.0}} }
+                                cr_domain_15 = <Label> { width: Fill, text: "", draw_text: {color: #ffffff, text_style: {font_size: 9.0}} }
+                                cr_target_15 = <Label> { width: 100, text: "", draw_text: {color: #aaccff, text_style: {font_size: 9.0}} }
+                                cr_delete_15 = <Button> { width: 20, height: 20, text: "×", draw_text: {color: #ff4444, text_style: {font_size: 12.0}}, draw_bg: { fn pixel(self) -> vec4 { return mix(#2a2a2a, #553333, self.hover); } } }
+                            }
+
+                            // Preset management row
+                            <View> { width: Fill, height: Fit, flow: Right, spacing: 4, align: {y: 0.5}, margin: {top: 4},
+                                <Label> { width: 55, text: "Preset", draw_text: {color: #ffffff, text_style: {font_size: 10.0}} }
+                                custom_rule_preset_input = <TextInput> {
+                                    width: Fill, height: 24,
+                                    empty_text: "preset name"
+                                    draw_text: {color: #ffffff, text_style: {font_size: 10.0}}
+                                    draw_bg: {color: #555555}
+                                }
+                                custom_rule_save_btn = <Button> { width: Fit, height: 24, padding: {left: 8, right: 8}, text: "Save", draw_text: {color: #ffffff, text_style: {font_size: 10.0}} }
+                                custom_rule_load_btn = <Button> { width: Fit, height: 24, padding: {left: 8, right: 8}, text: "Load ▼", draw_text: {color: #ffffff, text_style: {font_size: 10.0}} }
+                                custom_rule_clear_btn = <Button> { width: Fit, height: 24, padding: {left: 8, right: 8}, text: "Clear", draw_text: {color: #ff8888, text_style: {font_size: 10.0}} }
+                            }
+
+                            // Preset list (shown when Load is clicked)
+                            custom_rule_preset_panel = <View> {
+                                visible: false, width: Fill, height: Fit, flow: Down, spacing: 2, padding: {top: 2},
+                                cr_preset_slot_1 = <View> { visible: false, width: Fill, height: Fit, flow: Right, spacing: 4, align: {y: 0.5}, padding: {left: 4, right: 4, top: 2, bottom: 2}, show_bg: true, draw_bg: {color: #2a3a2a}
+                                    cr_preset_btn_1 = <Button> { width: Fill, height: 20, text: "", draw_text: {color: #aaccff, text_style: {font_size: 9.0}}, draw_bg: { fn pixel(self) -> vec4 { return mix(#2a3a2a, #3a4a3a, self.hover); } } }
+                                    cr_preset_del_1 = <Button> { width: 20, height: 20, text: "×", draw_text: {color: #ff4444, text_style: {font_size: 12.0}}, draw_bg: { fn pixel(self) -> vec4 { return mix(#2a3a2a, #553333, self.hover); } } }
+                                }
+                                cr_preset_slot_2 = <View> { visible: false, width: Fill, height: Fit, flow: Right, spacing: 4, align: {y: 0.5}, padding: {left: 4, right: 4, top: 2, bottom: 2}, show_bg: true, draw_bg: {color: #2a3a2a}
+                                    cr_preset_btn_2 = <Button> { width: Fill, height: 20, text: "", draw_text: {color: #aaccff, text_style: {font_size: 9.0}}, draw_bg: { fn pixel(self) -> vec4 { return mix(#2a3a2a, #3a4a3a, self.hover); } } }
+                                    cr_preset_del_2 = <Button> { width: 20, height: 20, text: "×", draw_text: {color: #ff4444, text_style: {font_size: 12.0}}, draw_bg: { fn pixel(self) -> vec4 { return mix(#2a3a2a, #553333, self.hover); } } }
+                                }
+                                cr_preset_slot_3 = <View> { visible: false, width: Fill, height: Fit, flow: Right, spacing: 4, align: {y: 0.5}, padding: {left: 4, right: 4, top: 2, bottom: 2}, show_bg: true, draw_bg: {color: #2a3a2a}
+                                    cr_preset_btn_3 = <Button> { width: Fill, height: 20, text: "", draw_text: {color: #aaccff, text_style: {font_size: 9.0}}, draw_bg: { fn pixel(self) -> vec4 { return mix(#2a3a2a, #3a4a3a, self.hover); } } }
+                                    cr_preset_del_3 = <Button> { width: 20, height: 20, text: "×", draw_text: {color: #ff4444, text_style: {font_size: 12.0}}, draw_bg: { fn pixel(self) -> vec4 { return mix(#2a3a2a, #553333, self.hover); } } }
+                                }
+                                cr_preset_slot_4 = <View> { visible: false, width: Fill, height: Fit, flow: Right, spacing: 4, align: {y: 0.5}, padding: {left: 4, right: 4, top: 2, bottom: 2}, show_bg: true, draw_bg: {color: #2a3a2a}
+                                    cr_preset_btn_4 = <Button> { width: Fill, height: 20, text: "", draw_text: {color: #aaccff, text_style: {font_size: 9.0}}, draw_bg: { fn pixel(self) -> vec4 { return mix(#2a3a2a, #3a4a3a, self.hover); } } }
+                                    cr_preset_del_4 = <Button> { width: 20, height: 20, text: "×", draw_text: {color: #ff4444, text_style: {font_size: 12.0}}, draw_bg: { fn pixel(self) -> vec4 { return mix(#2a3a2a, #553333, self.hover); } } }
+                                }
+                                cr_preset_slot_5 = <View> { visible: false, width: Fill, height: Fit, flow: Right, spacing: 4, align: {y: 0.5}, padding: {left: 4, right: 4, top: 2, bottom: 2}, show_bg: true, draw_bg: {color: #2a3a2a}
+                                    cr_preset_btn_5 = <Button> { width: Fill, height: 20, text: "", draw_text: {color: #aaccff, text_style: {font_size: 9.0}}, draw_bg: { fn pixel(self) -> vec4 { return mix(#2a3a2a, #3a4a3a, self.hover); } } }
+                                    cr_preset_del_5 = <Button> { width: 20, height: 20, text: "×", draw_text: {color: #ff4444, text_style: {font_size: 12.0}}, draw_bg: { fn pixel(self) -> vec4 { return mix(#2a3a2a, #553333, self.hover); } } }
+                                }
+                            }
+                        }
+                    }
+
                     // Proxy Pool Management
                     <View> {
                         width: Fill,
@@ -972,6 +1183,12 @@ pub const MAX_LOG_LINES: usize = 200;
 /// Maximum number of rule group slots in the UI
 pub const MAX_RULE_SLOTS: usize = 16;
 
+/// Maximum number of custom rule slots in the UI
+pub const MAX_CUSTOM_RULE_SLOTS: usize = 15;
+
+/// Maximum number of preset display slots
+pub const MAX_PRESET_SLOTS: usize = 5;
+
 /// Replace target for a rule group
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuleReplaceTarget {
@@ -1028,6 +1245,14 @@ pub struct AppState {
     pub rule_groups: Vec<RuleGroup>,
     pub rule_checked: Vec<bool>,
     pub rule_targets: Vec<RuleReplaceTarget>,
+    // Custom rules
+    pub show_custom_rules_panel: bool,
+    pub custom_rules: Vec<CustomRule>,
+    pub custom_rule_match_type: RuleMatchType,
+    pub custom_rule_target_index: usize,
+    pub available_targets: Vec<String>,
+    pub show_preset_list: bool,
+    pub custom_rule_presets: Vec<CustomRuleSet>,
 }
 
 impl Default for AppState {
@@ -1056,6 +1281,13 @@ impl Default for AppState {
             rule_groups: Vec::new(),
             rule_checked: vec![false; MAX_RULE_SLOTS],
             rule_targets: vec![RuleReplaceTarget::Keep; MAX_RULE_SLOTS],
+            show_custom_rules_panel: false,
+            custom_rules: Vec::new(),
+            custom_rule_match_type: RuleMatchType::DomainSuffix,
+            custom_rule_target_index: 0,
+            available_targets: vec!["DIRECT".to_string(), "Chain-Selector".to_string(), "Chain-Auto".to_string()],
+            show_preset_list: false,
+            custom_rule_presets: Vec::new(),
         }
     }
 }
@@ -1159,6 +1391,71 @@ impl MatchEvent for App {
                 self.cycle_rule_target(cx, slot - 1);
             }
         }
+        // Custom rules buttons
+        if self.ui.button(id!(toggle_custom_rules_btn)).clicked(actions) {
+            self.toggle_custom_rules_panel(cx);
+        }
+        if self.ui.button(id!(custom_rule_type_btn)).clicked(actions) {
+            self.cycle_custom_rule_type(cx);
+        }
+        if self.ui.button(id!(custom_rule_target_btn)).clicked(actions) {
+            self.cycle_custom_rule_target(cx);
+        }
+        if self.ui.button(id!(custom_rule_add_btn)).clicked(actions) {
+            self.add_custom_rule(cx);
+        }
+        if self.ui.button(id!(custom_rule_save_btn)).clicked(actions) {
+            self.save_custom_rule_preset(cx);
+        }
+        if self.ui.button(id!(custom_rule_load_btn)).clicked(actions) {
+            self.toggle_preset_list(cx);
+        }
+        if self.ui.button(id!(custom_rule_clear_btn)).clicked(actions) {
+            self.clear_custom_rules(cx);
+        }
+        // Custom rule slot buttons (check + delete)
+        for slot in 1..=MAX_CUSTOM_RULE_SLOTS {
+            let check_id = match slot {
+                1 => id!(cr_check_1), 2 => id!(cr_check_2), 3 => id!(cr_check_3),
+                4 => id!(cr_check_4), 5 => id!(cr_check_5), 6 => id!(cr_check_6),
+                7 => id!(cr_check_7), 8 => id!(cr_check_8), 9 => id!(cr_check_9),
+                10 => id!(cr_check_10), 11 => id!(cr_check_11), 12 => id!(cr_check_12),
+                13 => id!(cr_check_13), 14 => id!(cr_check_14), 15 => id!(cr_check_15),
+                _ => continue,
+            };
+            let delete_id = match slot {
+                1 => id!(cr_delete_1), 2 => id!(cr_delete_2), 3 => id!(cr_delete_3),
+                4 => id!(cr_delete_4), 5 => id!(cr_delete_5), 6 => id!(cr_delete_6),
+                7 => id!(cr_delete_7), 8 => id!(cr_delete_8), 9 => id!(cr_delete_9),
+                10 => id!(cr_delete_10), 11 => id!(cr_delete_11), 12 => id!(cr_delete_12),
+                13 => id!(cr_delete_13), 14 => id!(cr_delete_14), 15 => id!(cr_delete_15),
+                _ => continue,
+            };
+            if self.ui.button(check_id).clicked(actions) {
+                self.toggle_custom_rule_enabled(cx, slot - 1);
+            }
+            if self.ui.button(delete_id).clicked(actions) {
+                self.delete_custom_rule(cx, slot - 1);
+            }
+        }
+        // Preset slot buttons (load + delete)
+        for slot in 1..=MAX_PRESET_SLOTS {
+            let btn_id = match slot {
+                1 => id!(cr_preset_btn_1), 2 => id!(cr_preset_btn_2), 3 => id!(cr_preset_btn_3),
+                4 => id!(cr_preset_btn_4), 5 => id!(cr_preset_btn_5), _ => continue,
+            };
+            let del_id = match slot {
+                1 => id!(cr_preset_del_1), 2 => id!(cr_preset_del_2), 3 => id!(cr_preset_del_3),
+                4 => id!(cr_preset_del_4), 5 => id!(cr_preset_del_5), _ => continue,
+            };
+            if self.ui.button(btn_id).clicked(actions) {
+                self.load_preset(cx, slot - 1);
+            }
+            if self.ui.button(del_id).clicked(actions) {
+                self.delete_preset(cx, slot - 1);
+            }
+        }
+
         if self.ui.button(id!(fill_btn)).clicked(actions) {
             self.fill_proxy_fields(cx);
         }

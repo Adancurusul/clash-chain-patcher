@@ -13,3 +13,4 @@ pub use manager::{
     AppConfig, ClashApiConfig, ClashConfig, ConfigManager, HealthCheckConfig, LocalProxyConfig,
 };
 pub use upstream::{HealthStatus, ProxyHealth, UpstreamProxy};
+pub use crate::patcher::{CustomRule, CustomRuleSet, RuleMatchType};

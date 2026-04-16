@@ -8,8 +8,9 @@
 //!   ccp rules <config.yaml> [options]   - Rewrite rules only (no chain creation)
 
 use clap::{Parser, Subcommand};
+use clash_chain_patcher::config::ConfigManager;
 use clash_chain_patcher::merger::{ClashConfigMerger, MergerConfig};
-use clash_chain_patcher::patcher;
+use clash_chain_patcher::patcher::{self, CustomRule, CustomRuleSet};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process;
@@ -55,6 +56,16 @@ enum Commands {
         /// Chain suffix (default: "-Chain")
         #[arg(long, default_value = "-Chain")]
         suffix: String,
+
+        /// Custom rules to inject (highest priority, prepended to rules section)
+        /// Format: "TYPE:domain1,domain2:GROUP" (e.g. "DOMAIN-KEYWORD:lark,feishu:DIRECT")
+        /// or "TYPE,domain,GROUP" (e.g. "DOMAIN-SUFFIX,lark.com,DIRECT")
+        #[arg(long = "custom-rule")]
+        custom_rules: Option<Vec<String>>,
+
+        /// Apply a saved custom rule preset by name
+        #[arg(long)]
+        preset: Option<Vec<String>>,
     },
 
     /// Rewrite rules only (no chain proxy creation)
@@ -67,6 +78,40 @@ enum Commands {
         #[arg(short, long, required = true)]
         rewrite: Vec<String>,
     },
+
+    /// Manage custom rule presets (saved in config)
+    Preset {
+        #[command(subcommand)]
+        action: PresetAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum PresetAction {
+    /// List all saved presets
+    List,
+
+    /// Show rules in a preset
+    Show {
+        /// Preset name
+        name: String,
+    },
+
+    /// Create a new preset
+    Create {
+        /// Preset name
+        name: String,
+
+        /// Rules: "TYPE,domain,GROUP" (e.g. "DOMAIN-KEYWORD,lark,DIRECT")
+        #[arg(short, long, required = true)]
+        rule: Vec<String>,
+    },
+
+    /// Delete a preset
+    Delete {
+        /// Preset name
+        name: String,
+    },
 }
 
 fn main() {
@@ -74,10 +119,11 @@ fn main() {
 
     match cli.command {
         Commands::Info { config } => cmd_info(&config),
-        Commands::Apply { config, proxy, rewrite, no_backup, suffix } => {
-            cmd_apply(&config, &proxy, rewrite, no_backup, &suffix);
+        Commands::Apply { config, proxy, rewrite, no_backup, suffix, custom_rules, preset } => {
+            cmd_apply(&config, &proxy, rewrite, no_backup, &suffix, custom_rules, preset);
         }
         Commands::Rules { config, rewrite } => cmd_rules(&config, rewrite),
+        Commands::Preset { action } => cmd_preset(action),
     }
 }
 
@@ -118,7 +164,7 @@ fn cmd_info(config_path: &PathBuf) {
 }
 
 /// Apply full chain patch
-fn cmd_apply(config_path: &PathBuf, proxy_str: &str, rewrite: Option<Vec<String>>, no_backup: bool, suffix: &str) {
+fn cmd_apply(config_path: &PathBuf, proxy_str: &str, rewrite: Option<Vec<String>>, no_backup: bool, suffix: &str, custom_rules: Option<Vec<String>>, preset: Option<Vec<String>>) {
     // Parse proxy
     let proxy = patcher::parse_proxy_string(proxy_str).unwrap_or_else(|| {
         eprintln!("Error: Invalid proxy format: {}", proxy_str);
@@ -170,6 +216,35 @@ fn cmd_apply(config_path: &PathBuf, proxy_str: &str, rewrite: Option<Vec<String>
         println!();
         let replacements = parse_rewrite_args(&rewrite_args, config_path);
         apply_rule_rewrites(config_path, &replacements);
+    }
+
+    // Step 3: Inject custom rules if any
+    let mut all_custom_rules: Vec<CustomRule> = Vec::new();
+
+    // From --custom-rule flags
+    if let Some(cr_args) = custom_rules {
+        for arg in &cr_args {
+            all_custom_rules.extend(patcher::parse_custom_rule_string(arg));
+        }
+    }
+
+    // From --preset flags
+    if let Some(preset_names) = preset {
+        if let Ok(manager) = ConfigManager::new() {
+            for name in &preset_names {
+                if let Some(p) = manager.get_custom_rule_presets().iter().find(|p| p.name == *name) {
+                    all_custom_rules.extend(p.rules.clone());
+                    println!("Loaded preset: {} ({} rules)", name, p.rules.len());
+                } else {
+                    eprintln!("Warning: Preset '{}' not found", name);
+                }
+            }
+        }
+    }
+
+    if !all_custom_rules.is_empty() {
+        println!();
+        apply_custom_rule_injection(config_path, &all_custom_rules);
     }
 
     println!();
@@ -241,6 +316,98 @@ fn apply_rule_rewrites(config_path: &PathBuf, replacements: &HashMap<String, Str
         println!("  Rewritten: {} rules", count);
     } else {
         println!("  No rules matched for rewrite.");
+    }
+}
+
+/// Apply custom rule injection to a config file
+fn apply_custom_rule_injection(config_path: &PathBuf, rules: &[CustomRule]) {
+    if rules.is_empty() {
+        return;
+    }
+
+    let content = read_config(config_path);
+
+    println!("Custom rules injection:");
+    for rule in rules {
+        if rule.enabled {
+            println!("  {},{},{}", rule.match_type.clash_prefix(), rule.domain, rule.target_group);
+        }
+    }
+
+    let (output, count) = patcher::inject_custom_rules_text(&content, rules);
+    if count > 0 {
+        std::fs::write(config_path, output).unwrap_or_else(|e| {
+            eprintln!("Error: Failed to write config: {}", e);
+            process::exit(1);
+        });
+        println!("  Injected: {} rules", count);
+    } else {
+        println!("  No rules injected (no rules: section found or all disabled).");
+    }
+}
+
+/// Manage custom rule presets
+fn cmd_preset(action: PresetAction) {
+    let mut manager = ConfigManager::new().unwrap_or_else(|e| {
+        eprintln!("Error: Failed to load config: {}", e);
+        process::exit(1);
+    });
+
+    match action {
+        PresetAction::List => {
+            let presets = manager.get_custom_rule_presets();
+            if presets.is_empty() {
+                println!("No presets saved.");
+            } else {
+                println!("{:<30} {:>8}", "Preset", "Rules");
+                println!("{}", "-".repeat(40));
+                for p in presets {
+                    println!("{:<30} {:>8}", p.name, p.rules.len());
+                }
+            }
+        }
+        PresetAction::Show { name } => {
+            let presets = manager.get_custom_rule_presets();
+            if let Some(p) = presets.iter().find(|p| p.name == name) {
+                println!("Preset: {}", p.name);
+                println!("{}", "-".repeat(40));
+                for r in &p.rules {
+                    let status = if r.enabled { "+" } else { "-" };
+                    println!("  {} {},{},{}", status, r.match_type.clash_prefix(), r.domain, r.target_group);
+                }
+            } else {
+                eprintln!("Preset '{}' not found.", name);
+                process::exit(1);
+            }
+        }
+        PresetAction::Create { name, rule: rule_args } => {
+            let mut rules = Vec::new();
+            for arg in &rule_args {
+                let parsed = patcher::parse_custom_rule_string(arg);
+                if parsed.is_empty() {
+                    eprintln!("Warning: Could not parse rule '{}'", arg);
+                } else {
+                    rules.extend(parsed);
+                }
+            }
+            if rules.is_empty() {
+                eprintln!("Error: No valid rules provided.");
+                process::exit(1);
+            }
+            let preset = CustomRuleSet { name: name.clone(), rules };
+            manager.add_custom_rule_preset(preset).unwrap_or_else(|e| {
+                eprintln!("Error: Failed to save preset: {}", e);
+                process::exit(1);
+            });
+            println!("Preset '{}' created.", name);
+        }
+        PresetAction::Delete { name } => {
+            manager.remove_custom_rule_preset(&name).unwrap_or_else(|e| {
+                eprintln!("Error: Failed to delete preset: {}", e);
+                process::exit(1);
+            });
+            println!("Preset '{}' deleted.", name);
+        }
     }
 }
 

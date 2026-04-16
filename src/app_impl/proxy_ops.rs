@@ -78,6 +78,9 @@ impl App {
             self.refresh_file_history_display(cx);
         }
 
+        // Load custom rule presets from config
+        self.load_presets_from_config();
+
         // Refresh display will show proxy list (and clear logs to show current state)
         self.refresh_proxy_list_display(cx);
 

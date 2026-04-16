@@ -7,6 +7,7 @@
 //! - Patching configurations with new chain proxies
 
 use regex::Regex;
+use serde::{Deserialize, Serialize};
 use serde_yaml::{Mapping, Value};
 use std::collections::{HashMap, HashSet};
 
@@ -404,6 +405,65 @@ pub struct RuleGroup {
     pub count: usize,
 }
 
+/// Rule match type for custom rules
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RuleMatchType {
+    DomainSuffix,
+    Domain,
+    DomainKeyword,
+}
+
+impl RuleMatchType {
+    /// Short label for UI display
+    pub fn label(&self) -> &str {
+        match self {
+            Self::DomainSuffix => "SUFFIX",
+            Self::Domain => "EXACT",
+            Self::DomainKeyword => "KEYWORD",
+        }
+    }
+
+    /// Clash rule type prefix
+    pub fn clash_prefix(&self) -> &str {
+        match self {
+            Self::DomainSuffix => "DOMAIN-SUFFIX",
+            Self::Domain => "DOMAIN",
+            Self::DomainKeyword => "DOMAIN-KEYWORD",
+        }
+    }
+
+    /// Cycle to next type: Suffix → Keyword → Exact → Suffix
+    pub fn next(&self) -> Self {
+        match self {
+            Self::DomainSuffix => Self::DomainKeyword,
+            Self::DomainKeyword => Self::Domain,
+            Self::Domain => Self::DomainSuffix,
+        }
+    }
+}
+
+impl Default for RuleMatchType {
+    fn default() -> Self {
+        Self::DomainSuffix
+    }
+}
+
+/// A single custom rule entry
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CustomRule {
+    pub match_type: RuleMatchType,
+    pub domain: String,
+    pub target_group: String,
+    pub enabled: bool,
+}
+
+/// A named preset of custom rules, saved to config
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CustomRuleSet {
+    pub name: String,
+    pub rules: Vec<CustomRule>,
+}
+
 /// Parse a single rule string and extract the proxy group name.
 ///
 /// Rule formats:
@@ -524,7 +584,8 @@ pub fn rewrite_rules_text(content: &str, replacements: &HashMap<String, String>)
         let trimmed = line.trim_start();
 
         // Detect top-level section changes (line starts at column 0 with "key:")
-        if !line.starts_with(' ') && !line.starts_with('\t') && !line.is_empty() {
+        // Exclude YAML list entries ("- ") which are section content, not headers
+        if !line.starts_with(' ') && !line.starts_with('\t') && !line.starts_with("- ") && !line.is_empty() {
             in_rules_section = trimmed.starts_with("rules:");
         }
 
@@ -540,11 +601,24 @@ pub fn rewrite_rules_text(content: &str, replacements: &HashMap<String, String>)
         }
 
         for (old_group, new_group) in replacements {
-            // Match ",oldgroup" possibly followed by quote or end
+            // Match ",oldgroup" at a word boundary: must be followed by
+            // end-of-line, quote char, comma (no-resolve suffix), or whitespace
             let pattern = format!(",{}", old_group);
-            if line.contains(&pattern) {
-                count += 1;
-                return line.replacen(&pattern, &format!(",{}", new_group), 1);
+            if let Some(pos) = line.find(&pattern) {
+                let after = pos + pattern.len();
+                let next_char = line[after..].chars().next();
+                let is_boundary = match next_char {
+                    None => true,                          // end of line
+                    Some('\'' | '"') => true,              // closing quote
+                    Some(',') => true,                     // e.g. ,Proxy,no-resolve
+                    Some(c) if c.is_whitespace() => true,  // trailing space
+                    _ => false,                            // part of longer name like ProxyMedia
+                };
+                if is_boundary {
+                    count += 1;
+                    let replacement = format!(",{}", new_group);
+                    return format!("{}{}{}", &line[..pos], replacement, &line[after..]);
+                }
             }
         }
 
@@ -557,6 +631,150 @@ pub fn rewrite_rules_text(content: &str, replacements: &HashMap<String, String>)
         output.push('\n');
     }
     (output, count)
+}
+
+/// Text-based custom rules injection that preserves original YAML formatting.
+/// Injects custom rules at the top of the `rules:` section for highest priority.
+/// Returns `(new_content, injected_count)`.
+pub fn inject_custom_rules_text(content: &str, rules: &[CustomRule]) -> (String, usize) {
+    // Filter to enabled rules with non-empty domains
+    let active: Vec<&CustomRule> = rules
+        .iter()
+        .filter(|r| r.enabled && !r.domain.trim().is_empty())
+        .collect();
+
+    if active.is_empty() {
+        return (content.to_string(), 0);
+    }
+
+    let lines: Vec<&str> = content.lines().collect();
+    let mut rules_header_idx = None;
+
+    // Find the `rules:` section header
+    for (i, line) in lines.iter().enumerate() {
+        let trimmed = line.trim_start();
+        if !line.starts_with(' ') && !line.starts_with('\t') && !line.is_empty() {
+            if trimmed.starts_with("rules:") {
+                rules_header_idx = Some(i);
+                break;
+            }
+        }
+    }
+
+    let Some(header_idx) = rules_header_idx else {
+        return (content.to_string(), 0);
+    };
+
+    // Detect indent and quoting from first existing rule entry
+    let mut indent = "  ".to_string();
+    let mut use_quotes = false;
+    let mut quote_char = '\'';
+
+    for line in &lines[header_idx + 1..] {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("- ") {
+            // Detect indent
+            let leading = line.len() - trimmed.len();
+            indent = " ".repeat(leading);
+
+            // Detect quoting: check if the rule value after "- " is quoted
+            let after_dash = trimmed.strip_prefix("- ").unwrap_or("");
+            if after_dash.starts_with('\'') || after_dash.starts_with('"') {
+                use_quotes = true;
+                quote_char = after_dash.chars().next().unwrap();
+            }
+            break;
+        }
+        // Stop if we hit another top-level section
+        if !line.starts_with(' ') && !line.starts_with('\t') && !line.is_empty() && !trimmed.starts_with('#') {
+            break;
+        }
+    }
+
+    // Generate new rule lines
+    let new_lines: Vec<String> = active
+        .iter()
+        .map(|r| {
+            let rule_str = format!("{},{},{}", r.match_type.clash_prefix(), r.domain.trim(), r.target_group);
+            if use_quotes {
+                format!("{}- {}{}{}", indent, quote_char, rule_str, quote_char)
+            } else {
+                format!("{}- {}", indent, rule_str)
+            }
+        })
+        .collect();
+
+    let count = new_lines.len();
+
+    // Rebuild: insert new lines right after the rules: header
+    let mut result = Vec::with_capacity(lines.len() + count);
+    result.extend(lines[..=header_idx].iter().map(|s| s.to_string()));
+    result.extend(new_lines);
+    result.extend(lines[header_idx + 1..].iter().map(|s| s.to_string()));
+
+    let mut output = result.join("\n");
+    if content.ends_with('\n') && !output.ends_with('\n') {
+        output.push('\n');
+    }
+    (output, count)
+}
+
+/// Parse a custom rule from a CLI string.
+/// Accepted formats:
+/// - "TYPE,domain,GROUP" (e.g. "DOMAIN-KEYWORD,lark,DIRECT")
+/// - "TYPE:domain1,domain2:GROUP" (e.g. "DOMAIN-KEYWORD:lark,feishu:DIRECT")
+pub fn parse_custom_rule_string(input: &str) -> Vec<CustomRule> {
+    let input = input.trim();
+    if input.is_empty() {
+        return vec![];
+    }
+
+    // Try colon-separated format first: TYPE:domains:GROUP
+    let colon_parts: Vec<&str> = input.split(':').collect();
+    if colon_parts.len() == 3 {
+        let match_type = match colon_parts[0].to_uppercase().as_str() {
+            "DOMAIN-SUFFIX" | "SUFFIX" => Some(RuleMatchType::DomainSuffix),
+            "DOMAIN-KEYWORD" | "KEYWORD" => Some(RuleMatchType::DomainKeyword),
+            "DOMAIN" | "EXACT" => Some(RuleMatchType::Domain),
+            _ => None, // Unknown type: don't silently default
+        };
+        if let Some(match_type) = match_type {
+            let target = colon_parts[2].to_string();
+            return colon_parts[1]
+                .split(',')
+                .filter(|d| !d.trim().is_empty())
+                .map(|d| CustomRule {
+                    match_type,
+                    domain: d.trim().to_string(),
+                    target_group: target.clone(),
+                    enabled: true,
+                })
+                .collect();
+        }
+        // Fall through to comma format if type is unrecognized
+    }
+
+    // Try comma-separated format: TYPE,domain,GROUP
+    let comma_parts: Vec<&str> = input.split(',').collect();
+    if comma_parts.len() == 3 {
+        let match_type = match comma_parts[0].to_uppercase().as_str() {
+            "DOMAIN-SUFFIX" => Some(RuleMatchType::DomainSuffix),
+            "DOMAIN-KEYWORD" => Some(RuleMatchType::DomainKeyword),
+            "DOMAIN" => Some(RuleMatchType::Domain),
+            _ => None,
+        };
+        let Some(match_type) = match_type else {
+            return vec![];
+        };
+        return vec![CustomRule {
+            match_type,
+            domain: comma_parts[1].trim().to_string(),
+            target_group: comma_parts[2].trim().to_string(),
+            enabled: true,
+        }];
+    }
+
+    vec![]
 }
 
 #[cfg(test)]
@@ -661,5 +879,133 @@ rules:
         let (output, count) = rewrite_rules(yaml, &HashMap::new()).unwrap();
         assert_eq!(count, 0);
         assert_eq!(output, yaml);
+    }
+
+    #[test]
+    fn test_rewrite_rules_text_no_substring_match() {
+        // "Proxy" should NOT match "ProxyMedia" — boundary check
+        let yaml = "rules:\n  - DOMAIN,a.com,Proxy\n  - DOMAIN,b.com,ProxyMedia\n  - MATCH,Proxy\n";
+        let mut replacements = HashMap::new();
+        replacements.insert("Proxy".to_string(), "Chain-Selector".to_string());
+        let (output, count) = rewrite_rules_text(yaml, &replacements);
+        assert_eq!(count, 2); // Only "Proxy", not "ProxyMedia"
+        assert!(output.contains(",Chain-Selector"));
+        assert!(output.contains(",ProxyMedia")); // ProxyMedia unchanged
+        assert!(!output.contains("Chain-SelectorMedia")); // No corruption
+    }
+
+    // === Custom Rules Tests ===
+
+    #[test]
+    fn test_rule_match_type_cycle() {
+        let t = RuleMatchType::DomainSuffix;
+        assert_eq!(t.next(), RuleMatchType::DomainKeyword);
+        assert_eq!(t.next().next(), RuleMatchType::Domain);
+        assert_eq!(t.next().next().next(), RuleMatchType::DomainSuffix);
+    }
+
+    #[test]
+    fn test_rule_match_type_clash_prefix() {
+        assert_eq!(RuleMatchType::DomainSuffix.clash_prefix(), "DOMAIN-SUFFIX");
+        assert_eq!(RuleMatchType::Domain.clash_prefix(), "DOMAIN");
+        assert_eq!(RuleMatchType::DomainKeyword.clash_prefix(), "DOMAIN-KEYWORD");
+    }
+
+    #[test]
+    fn test_inject_custom_rules_basic() {
+        let yaml = r#"rules:
+  - DOMAIN,a.com,Proxy
+  - MATCH,Proxy
+"#;
+        let rules = vec![
+            CustomRule {
+                match_type: RuleMatchType::DomainSuffix,
+                domain: "lark.com".to_string(),
+                target_group: "DIRECT".to_string(),
+                enabled: true,
+            },
+            CustomRule {
+                match_type: RuleMatchType::DomainKeyword,
+                domain: "feishu".to_string(),
+                target_group: "DIRECT".to_string(),
+                enabled: true,
+            },
+        ];
+        let (output, count) = inject_custom_rules_text(yaml, &rules);
+        assert_eq!(count, 2);
+        // Custom rules should appear before existing rules
+        let lines: Vec<&str> = output.lines().collect();
+        assert_eq!(lines[0], "rules:");
+        assert!(lines[1].contains("DOMAIN-SUFFIX,lark.com,DIRECT"));
+        assert!(lines[2].contains("DOMAIN-KEYWORD,feishu,DIRECT"));
+        assert!(lines[3].contains("DOMAIN,a.com,Proxy"));
+    }
+
+    #[test]
+    fn test_inject_custom_rules_empty() {
+        let yaml = "rules:\n  - DOMAIN,a.com,Proxy\n";
+        let (output, count) = inject_custom_rules_text(yaml, &[]);
+        assert_eq!(count, 0);
+        assert_eq!(output, yaml);
+    }
+
+    #[test]
+    fn test_inject_custom_rules_disabled_skipped() {
+        let yaml = "rules:\n  - DOMAIN,a.com,Proxy\n";
+        let rules = vec![CustomRule {
+            match_type: RuleMatchType::DomainSuffix,
+            domain: "lark.com".to_string(),
+            target_group: "DIRECT".to_string(),
+            enabled: false,
+        }];
+        let (output, count) = inject_custom_rules_text(yaml, &rules);
+        assert_eq!(count, 0);
+        assert_eq!(output, yaml);
+    }
+
+    #[test]
+    fn test_inject_custom_rules_no_rules_section() {
+        let yaml = "proxies:\n  - name: node1\n";
+        let rules = vec![CustomRule {
+            match_type: RuleMatchType::DomainSuffix,
+            domain: "lark.com".to_string(),
+            target_group: "DIRECT".to_string(),
+            enabled: true,
+        }];
+        let (output, count) = inject_custom_rules_text(yaml, &rules);
+        assert_eq!(count, 0);
+        assert_eq!(output, yaml);
+    }
+
+    #[test]
+    fn test_inject_custom_rules_quoted_style() {
+        let yaml = "rules:\n  - 'DOMAIN,a.com,Proxy'\n  - 'MATCH,Proxy'\n";
+        let rules = vec![CustomRule {
+            match_type: RuleMatchType::DomainKeyword,
+            domain: "lark".to_string(),
+            target_group: "DIRECT".to_string(),
+            enabled: true,
+        }];
+        let (output, count) = inject_custom_rules_text(yaml, &rules);
+        assert_eq!(count, 1);
+        assert!(output.contains("- 'DOMAIN-KEYWORD,lark,DIRECT'"));
+    }
+
+    #[test]
+    fn test_parse_custom_rule_string_comma() {
+        let rules = parse_custom_rule_string("DOMAIN-KEYWORD,lark,DIRECT");
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].match_type, RuleMatchType::DomainKeyword);
+        assert_eq!(rules[0].domain, "lark");
+        assert_eq!(rules[0].target_group, "DIRECT");
+    }
+
+    #[test]
+    fn test_parse_custom_rule_string_colon_multi() {
+        let rules = parse_custom_rule_string("DOMAIN-SUFFIX:lark.com,feishu.cn:DIRECT");
+        assert_eq!(rules.len(), 2);
+        assert_eq!(rules[0].domain, "lark.com");
+        assert_eq!(rules[1].domain, "feishu.cn");
+        assert_eq!(rules[0].target_group, "DIRECT");
     }
 }

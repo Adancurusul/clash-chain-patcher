@@ -4,6 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use super::upstream::UpstreamProxy;
+use crate::patcher::CustomRuleSet;
 
 /// Application configuration manager
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -23,6 +24,14 @@ pub struct AppConfig {
     /// Recently used Clash config file paths (max 5)
     #[serde(default)]
     pub recent_files: Vec<String>,
+
+    /// Custom rule presets for domain routing
+    #[serde(default)]
+    pub custom_rule_presets: Vec<CustomRuleSet>,
+
+    /// Whether built-in presets have been seeded (prevents re-seeding after user deletes them)
+    #[serde(default)]
+    pub presets_seeded: bool,
 }
 
 impl Default for AppConfig {
@@ -33,6 +42,8 @@ impl Default for AppConfig {
             local_proxy: LocalProxyConfig::default(),
             health_check: HealthCheckConfig::default(),
             recent_files: Vec::new(),
+            custom_rule_presets: Vec::new(),
+            presets_seeded: false,
         }
     }
 }
@@ -354,6 +365,51 @@ impl ConfigManager {
             self.config.recent_files.remove(index);
             self.save()?;
         }
+        Ok(())
+    }
+
+    // ===== Custom rule preset management =====
+
+    /// Get all custom rule presets
+    pub fn get_custom_rule_presets(&self) -> &[CustomRuleSet] {
+        &self.config.custom_rule_presets
+    }
+
+    /// Replace all custom rule presets
+    pub fn save_custom_rule_presets(&mut self, presets: Vec<CustomRuleSet>) -> Result<()> {
+        self.config.custom_rule_presets = presets;
+        self.save()?;
+        Ok(())
+    }
+
+    /// Add or update a custom rule preset (overwrites if name exists)
+    pub fn add_custom_rule_preset(&mut self, preset: CustomRuleSet) -> Result<()> {
+        self.config.custom_rule_presets.retain(|p| p.name != preset.name);
+        self.config.custom_rule_presets.push(preset);
+        self.save()?;
+        Ok(())
+    }
+
+    /// Check if presets have been seeded
+    pub fn presets_seeded(&self) -> bool {
+        self.config.presets_seeded
+    }
+
+    /// Mark presets as seeded
+    pub fn set_presets_seeded(&mut self) -> Result<()> {
+        self.config.presets_seeded = true;
+        self.save()?;
+        Ok(())
+    }
+
+    /// Remove a custom rule preset by name
+    pub fn remove_custom_rule_preset(&mut self, name: &str) -> Result<()> {
+        let original_len = self.config.custom_rule_presets.len();
+        self.config.custom_rule_presets.retain(|p| p.name != name);
+        if self.config.custom_rule_presets.len() == original_len {
+            anyhow::bail!("Preset '{}' not found", name);
+        }
+        self.save()?;
         Ok(())
     }
 }

@@ -125,6 +125,10 @@ impl App {
         let rule_replacements = self.build_rule_replacements();
         let has_rule_rewrites = !rule_replacements.is_empty();
 
+        // Build custom rules from UI state
+        let custom_rules = self.build_custom_rules();
+        let has_custom_rules = !custom_rules.is_empty();
+
         // Clone data for thread
         let proxy_host_clone = proxy_host.clone();
         let proxy_username_clone = proxy_username.clone().filter(|s| !s.is_empty());
@@ -132,6 +136,10 @@ impl App {
 
         if has_rule_rewrites {
             self.add_log(cx, &format!("  Rules rewrite: {} groups to replace", rule_replacements.len()));
+            self.update_log_display(cx);
+        }
+        if has_custom_rules {
+            self.add_log(cx, &format!("  Custom rules: {} to inject", custom_rules.len()));
             self.update_log_display(cx);
         }
 
@@ -187,6 +195,31 @@ impl App {
                                 }
                                 Err(e) => {
                                     details.push(format!("✗ Rules rewrite read failed: {}", e));
+                                }
+                            }
+                        }
+
+                        // Inject custom rules if any (Step 3)
+                        if !custom_rules.is_empty() {
+                            // Log each custom rule
+                            for r in &custom_rules {
+                                if r.enabled {
+                                    details.push(format!("  + {},{},{}", r.match_type.clash_prefix(), r.domain, r.target_group));
+                                }
+                            }
+                            match std::fs::read_to_string(&config_path) {
+                                Ok(content) => {
+                                    let (output, count) = clash_chain_patcher::patcher::inject_custom_rules_text(&content, &custom_rules);
+                                    if count > 0 {
+                                        if let Err(e) = std::fs::write(&config_path, output) {
+                                            details.push(format!("✗ Custom rules write failed: {}", e));
+                                        } else {
+                                            details.push(format!("Custom rules injected: {} rules", count));
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    details.push(format!("✗ Custom rules read failed: {}", e));
                                 }
                             }
                         }

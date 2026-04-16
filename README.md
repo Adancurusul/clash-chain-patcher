@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.3.0-blue" alt="Version">
+  <img src="https://img.shields.io/badge/version-0.4.0-blue" alt="Version">
   <img src="https://img.shields.io/badge/rust-1.70%2B-orange" alt="Rust">
   <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
 </p>
@@ -34,6 +34,7 @@
 
 - **Dual Chain Groups** - Creates both Chain-Auto (fastest auto-select) and Chain-Selector (manual) groups
 - **Rules Rewrite** - Selectively redirect Clash rules to use chain proxies (Chain-Selector / Chain-Auto)
+- **Custom Rules** - Inject custom domain routing rules (e.g., Lark/飞书 → DIRECT) with saveable presets
 - **Proxy Pool** - Manage multiple SOCKS5 upstream proxies with health checking
 - **File Watching** - Auto re-apply when Clash config changes externally
 - **CLI Support** - Full command-line interface (`ccp`) for scripting and automation
@@ -48,7 +49,8 @@ Traffic flow: You → Clash → VPN Node → Your SOCKS5 Proxy → Internet
 1. **Add your SOCKS5 proxy** to the Proxy Pool
 2. **Select Clash config** file
 3. **Configure Rules Rewrite** - Choose which rule groups to redirect through chain proxies
-4. **Click Apply** - Creates chain relays, selector groups, and rewrites rules
+4. **Add Custom Rules** (optional) - Route specific domains to DIRECT or other groups
+5. **Click Apply** - Creates chain relays, selector groups, rewrites rules, and injects custom rules
 
 ## Download
 
@@ -85,12 +87,26 @@ After loading a config, the **Rules Rewrite** panel auto-detects all proxy group
 - Click the **target button** to cycle through: `Keep` → `Chain-Selector` → `Chain-Auto`
 - Non-DIRECT/REJECT groups are auto-checked with Chain-Selector by default
 
-### Step 4: Apply
+### Step 4: Custom Rules (Optional)
+
+Expand the **Custom Rules** panel to add domain-specific routing exceptions:
+
+- Enter domains (comma-separated, e.g. `lark.com,feishu.cn`)
+- Click **Type** to cycle: `SUFFIX` (domain suffix) → `KEYWORD` (contains) → `EXACT` (exact match)
+- Click **Target** to cycle through available groups: `DIRECT`, config groups, `Chain-Selector`, `Chain-Auto`
+- Click **+ Add** to add the rule
+
+**Use case**: When using a US SOCKS5 proxy chain, services like Lark/飞书 (blocked in the US) should go `DIRECT`.
+
+**Presets**: Save your custom rules as named presets for reuse — enter a name and click **Save**. Click **Load** to load a saved preset.
+
+### Step 5: Apply
 
 Click **Apply**. The tool will:
 - Create relay chains for each proxy node
 - Create Chain-Selector and Chain-Auto groups
 - Rewrite checked rules to point to the selected chain group
+- Inject custom rules at the top of the rules section (highest priority)
 
 ## CLI Usage
 
@@ -130,6 +146,48 @@ ccp apply config.yaml -p user:pass@host:port \
   -r "Streaming=Chain-Auto"
 ```
 
+### Apply with custom rules
+
+```bash
+# Inject custom domain rules (highest priority, prepended to rules section)
+ccp apply config.yaml -p host:port:user:pass -r auto \
+  --custom-rule "DOMAIN-KEYWORD:lark,feishu:DIRECT"
+
+# Multiple custom rules
+ccp apply config.yaml -p host:port -r auto \
+  --custom-rule "DOMAIN-KEYWORD:lark,feishu:DIRECT" \
+  --custom-rule "DOMAIN-SUFFIX,larksuite.com,DIRECT"
+
+# Use a saved preset
+ccp apply config.yaml -p host:port -r auto --preset lark-direct
+```
+
+Custom rule formats:
+- Colon format (multi-domain): `TYPE:domain1,domain2:GROUP`
+- Comma format (single): `TYPE,domain,GROUP`
+- Types: `DOMAIN-SUFFIX` / `DOMAIN-KEYWORD` / `DOMAIN` (or short: `SUFFIX` / `KEYWORD` / `EXACT`)
+
+### Manage presets
+
+```bash
+# Create a reusable preset
+ccp preset create lark-direct \
+  --rule "DOMAIN-KEYWORD,lark,DIRECT" \
+  --rule "DOMAIN-KEYWORD,feishu,DIRECT" \
+  --rule "DOMAIN-SUFFIX,larksuite.com,DIRECT"
+
+# List all presets
+ccp preset list
+
+# Show preset details
+ccp preset show lark-direct
+
+# Delete a preset
+ccp preset delete lark-direct
+```
+
+Presets are saved in `~/.config/clash-chain-patcher/config.json`.
+
 ### Rewrite rules only (no chain creation)
 
 ```bash
@@ -143,10 +201,12 @@ ccp rules config.yaml -r "Proxy=Chain-Auto"
 ccp apply [OPTIONS] --proxy <PROXY> <CONFIG>
 
 Options:
-  -p, --proxy <PROXY>      SOCKS5 proxy string
-  -r, --rewrite <REWRITE>  Rule rewrite (repeatable), or "auto"
-      --no-backup          Skip creating backup
-      --suffix <SUFFIX>    Chain suffix [default: -Chain]
+  -p, --proxy <PROXY>          SOCKS5 proxy string
+  -r, --rewrite <REWRITE>      Rule rewrite (repeatable), or "auto"
+      --custom-rule <RULE>     Custom rule to inject (repeatable)
+      --preset <NAME>          Apply a saved preset (repeatable)
+      --no-backup              Skip creating backup
+      --suffix <SUFFIX>        Chain suffix [default: -Chain]
 ```
 
 ## Example
@@ -168,7 +228,7 @@ rules:
   - MATCH,Proxy
 ```
 
-After `ccp apply config.yaml -p 1.2.3.4:1080 -r auto`:
+After `ccp apply config.yaml -p 1.2.3.4:1080 -r auto --custom-rule "DOMAIN-KEYWORD:lark,feishu:DIRECT"`:
 ```yaml
 proxies:
   - name: "Local-Chain-Proxy"
@@ -200,6 +260,8 @@ proxy-groups:
     proxies: ["Tokyo-01", "Local-Chain-Proxy"]
 
 rules:
+  - DOMAIN-KEYWORD,lark,DIRECT          # custom rule (highest priority)
+  - DOMAIN-KEYWORD,feishu,DIRECT        # custom rule
   - DOMAIN,google.com,Chain-Selector    # was: Proxy
   - MATCH,Chain-Selector                # was: Proxy
 ```
