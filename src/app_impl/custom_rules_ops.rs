@@ -354,6 +354,12 @@ impl App {
                     CustomRule { match_type: RuleMatchType::DomainSuffix, domain: "larksuite.com".to_string(), target_group: "DIRECT".to_string(), enabled: true },
                 ],
             },
+            CustomRuleSet {
+                name: "SSH Direct".to_string(),
+                rules: vec![
+                    CustomRule { match_type: RuleMatchType::DstPort, domain: "22".to_string(), target_group: "DIRECT".to_string(), enabled: true },
+                ],
+            },
         ]
     }
 }

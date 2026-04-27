@@ -644,7 +644,7 @@ live_design! {
                                 <Label> { width: 55, text: "Domain", draw_text: {color: #ffffff, text_style: {font_size: 10.0}} }
                                 custom_rule_domain_input = <TextInput> {
                                     width: Fill, height: 24,
-                                    empty_text: "lark.com or lark,feishu"
+                                    empty_text: "lark.com | 22 (port) | 192.168.0.0/16"
                                     draw_text: {color: #ffffff, text_style: {font_size: 10.0}}
                                     draw_bg: {color: #555555}
                                 }
@@ -654,7 +654,7 @@ live_design! {
                                 <Label> { width: 55, text: "Type", draw_text: {color: #ffffff, text_style: {font_size: 10.0}} }
                                 custom_rule_type_btn = <Button> {
                                     width: 110, height: 24, text: "SUFFIX",
-                                    draw_text: {color: #aaccff, text_style: {font_size: 9.0}}
+                                    draw_text: {color: #aaccff, text_style: {font_size: 8.5}}
                                     draw_bg: { fn pixel(self) -> vec4 { return mix(#3a3a3a, #555555, self.hover); } }
                                 }
                                 <Label> { width: 40, text: "Target", draw_text: {color: #ffffff, text_style: {font_size: 10.0}} }

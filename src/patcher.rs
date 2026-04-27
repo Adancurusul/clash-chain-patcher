@@ -411,6 +411,8 @@ pub enum RuleMatchType {
     DomainSuffix,
     Domain,
     DomainKeyword,
+    DstPort,
+    IpCidr,
 }
 
 impl RuleMatchType {
@@ -420,6 +422,8 @@ impl RuleMatchType {
             Self::DomainSuffix => "SUFFIX",
             Self::Domain => "EXACT",
             Self::DomainKeyword => "KEYWORD",
+            Self::DstPort => "DST-PORT",
+            Self::IpCidr => "IP-CIDR",
         }
     }
 
@@ -429,15 +433,24 @@ impl RuleMatchType {
             Self::DomainSuffix => "DOMAIN-SUFFIX",
             Self::Domain => "DOMAIN",
             Self::DomainKeyword => "DOMAIN-KEYWORD",
+            Self::DstPort => "DST-PORT",
+            Self::IpCidr => "IP-CIDR",
         }
     }
 
-    /// Cycle to next type: Suffix → Keyword → Exact → Suffix
+    /// Whether this rule type needs the `,no-resolve` suffix (IP rules do)
+    pub fn needs_no_resolve(&self) -> bool {
+        matches!(self, Self::IpCidr)
+    }
+
+    /// Cycle to next type
     pub fn next(&self) -> Self {
         match self {
             Self::DomainSuffix => Self::DomainKeyword,
             Self::DomainKeyword => Self::Domain,
-            Self::Domain => Self::DomainSuffix,
+            Self::Domain => Self::DstPort,
+            Self::DstPort => Self::IpCidr,
+            Self::IpCidr => Self::DomainSuffix,
         }
     }
 }
@@ -695,7 +708,10 @@ pub fn inject_custom_rules_text(content: &str, rules: &[CustomRule]) -> (String,
     let new_lines: Vec<String> = active
         .iter()
         .map(|r| {
-            let rule_str = format!("{},{},{}", r.match_type.clash_prefix(), r.domain.trim(), r.target_group);
+            let mut rule_str = format!("{},{},{}", r.match_type.clash_prefix(), r.domain.trim(), r.target_group);
+            if r.match_type.needs_no_resolve() {
+                rule_str.push_str(",no-resolve");
+            }
             if use_quotes {
                 format!("{}- {}{}{}", indent, quote_char, rule_str, quote_char)
             } else {
@@ -736,6 +752,8 @@ pub fn parse_custom_rule_string(input: &str) -> Vec<CustomRule> {
             "DOMAIN-SUFFIX" | "SUFFIX" => Some(RuleMatchType::DomainSuffix),
             "DOMAIN-KEYWORD" | "KEYWORD" => Some(RuleMatchType::DomainKeyword),
             "DOMAIN" | "EXACT" => Some(RuleMatchType::Domain),
+            "DST-PORT" | "PORT" => Some(RuleMatchType::DstPort),
+            "IP-CIDR" | "CIDR" => Some(RuleMatchType::IpCidr),
             _ => None, // Unknown type: don't silently default
         };
         if let Some(match_type) = match_type {
@@ -761,6 +779,8 @@ pub fn parse_custom_rule_string(input: &str) -> Vec<CustomRule> {
             "DOMAIN-SUFFIX" => Some(RuleMatchType::DomainSuffix),
             "DOMAIN-KEYWORD" => Some(RuleMatchType::DomainKeyword),
             "DOMAIN" => Some(RuleMatchType::Domain),
+            "DST-PORT" => Some(RuleMatchType::DstPort),
+            "IP-CIDR" => Some(RuleMatchType::IpCidr),
             _ => None,
         };
         let Some(match_type) = match_type else {
@@ -901,7 +921,37 @@ rules:
         let t = RuleMatchType::DomainSuffix;
         assert_eq!(t.next(), RuleMatchType::DomainKeyword);
         assert_eq!(t.next().next(), RuleMatchType::Domain);
-        assert_eq!(t.next().next().next(), RuleMatchType::DomainSuffix);
+        assert_eq!(t.next().next().next(), RuleMatchType::DstPort);
+        assert_eq!(t.next().next().next().next(), RuleMatchType::IpCidr);
+        assert_eq!(t.next().next().next().next().next(), RuleMatchType::DomainSuffix);
+    }
+
+    #[test]
+    fn test_inject_ip_cidr_has_no_resolve() {
+        let yaml = "rules:\n  - MATCH,Proxy\n";
+        let rules = vec![CustomRule {
+            match_type: RuleMatchType::IpCidr,
+            domain: "192.168.0.0/16".to_string(),
+            target_group: "DIRECT".to_string(),
+            enabled: true,
+        }];
+        let (output, count) = inject_custom_rules_text(yaml, &rules);
+        assert_eq!(count, 1);
+        assert!(output.contains("IP-CIDR,192.168.0.0/16,DIRECT,no-resolve"));
+    }
+
+    #[test]
+    fn test_inject_dst_port() {
+        let yaml = "rules:\n  - MATCH,Proxy\n";
+        let rules = vec![CustomRule {
+            match_type: RuleMatchType::DstPort,
+            domain: "22".to_string(),
+            target_group: "DIRECT".to_string(),
+            enabled: true,
+        }];
+        let (output, count) = inject_custom_rules_text(yaml, &rules);
+        assert_eq!(count, 1);
+        assert!(output.contains("- DST-PORT,22,DIRECT"));
     }
 
     #[test]

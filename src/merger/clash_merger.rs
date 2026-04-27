@@ -1,14 +1,19 @@
 //! Clash configuration merger — text-based, format-preserving
 //!
-//! Creates relay chain proxies that route traffic through a local SOCKS5 proxy
+//! Creates chain proxies that route traffic through a local SOCKS5 proxy
 //! before reaching the target proxy nodes.
+//!
+//! Implementation: clones each proxy node and adds the `dialer-proxy` field
+//! pointing at the local SOCKS5 hop. The cloned nodes are named `<name>-Chain`
+//! and referenced from `Chain-Selector` / `Chain-Auto` proxy-groups.
+//! This replaces the legacy `type: relay` proxy-groups, which Mihomo removed.
 //!
 //! Key design: uses serde_yaml for READ-ONLY analysis, but writes back using
 //! text manipulation to preserve the original YAML formatting (flow-style,
 //! indentation, quoting, comments).
 
 use anyhow::{Context, Result};
-use serde_yaml::Value;
+use serde_yaml::{Mapping, Value};
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -131,7 +136,8 @@ impl ClashConfigMerger {
         let config_map = parsed.as_mapping()
             .context("Config root must be a YAML mapping")?;
 
-        let proxy_names = self.get_proxy_names(config_map)?;
+        let proxy_entries = self.get_proxy_entries(config_map)?;
+        let proxy_names: Vec<String> = proxy_entries.iter().map(|(n, _)| n.clone()).collect();
         let main_group = self.detect_main_group(config_map);
         if let Some(ref name) = main_group {
             info!("Detected main entry group: {}", name);
@@ -192,14 +198,9 @@ impl ClashConfigMerger {
             }
         }
 
-        // Add relay chain entries
+        // Note: chain entries are no longer relay-type proxy-groups (removed in Mihomo).
+        // They are emitted in the proxies section as cloned nodes with `dialer-proxy`.
         result.chains_created = proxy_names.len();
-        for proxy_name in &proxy_names {
-            new_groups_content.push(format!(
-                "{}- {{ name: '{}{}', type: relay, proxies: ['{}', {}], benchmark-url: 'http://www.gstatic.com/generate_204', benchmark-timeout: 5 }}",
-                indent, proxy_name, self.config.chain_suffix, proxy_name, self.config.proxy_name
-            ));
-        }
 
         // Step 4: Process proxies section
         let proxies_lines = lines[ps + 1..pe].to_vec();
@@ -208,10 +209,20 @@ impl ClashConfigMerger {
         let mut new_proxies_content: Vec<String> = Vec::new();
         for entry in &proxies_entries {
             let name = Self::extract_entry_name(&entry.lines);
-            if name.as_deref() == Some(&self.config.proxy_name) {
-                continue; // remove old Local-Chain-Proxy
+            if let Some(ref n) = name {
+                // Drop old Local-Chain-Proxy and any prior cloned chain nodes
+                if n == &self.config.proxy_name || n.ends_with(&self.config.chain_suffix) {
+                    continue;
+                }
             }
             new_proxies_content.extend(entry.lines.clone());
+        }
+
+        // Append cloned chain proxy nodes with dialer-proxy
+        for (name, value) in &proxy_entries {
+            let chain_name = format!("{}{}", name, self.config.chain_suffix);
+            let cloned = build_cloned_proxy_flow(value, &chain_name, &self.config.proxy_name);
+            new_proxies_content.push(format!("{}- {}", indent, cloned));
         }
 
         // Append new Local-Chain-Proxy
@@ -344,37 +355,71 @@ impl ClashConfigMerger {
         format!("{}- {{ {} }}", indent, parts.join(", "))
     }
 
-    /// Inject Chain-Selector and Chain-Auto into a group's proxies list
+    /// Inject Chain-Selector and Chain-Auto into a group's proxies list.
+    /// Idempotent: existing references to Chain-Selector / Chain-Auto are
+    /// stripped first so re-applying the merge does not stack duplicates.
     fn inject_into_group_proxies(&self, entry_lines: &[String]) -> Vec<String> {
-        let mut result = Vec::new();
-        let mut proxies_line_seen = false;
+        // Pass 1: strip any existing block-style "- Chain-Selector" / "- Chain-Auto"
+        // and clean inline flow-style proxies: [..] lists of those names.
+        let cleaned: Vec<String> = entry_lines.iter().filter_map(|line| {
+            let t = line.trim();
+            if t == "- Chain-Selector" || t == "- Chain-Auto"
+                || t == "- 'Chain-Selector'" || t == "- 'Chain-Auto'"
+                || t == "- \"Chain-Selector\"" || t == "- \"Chain-Auto\""
+            {
+                return None;
+            }
+            if line.contains("proxies:") && line.contains('[') {
+                if let (Some(open), Some(close)) = (line.find('['), line.rfind(']')) {
+                    let inner = &line[open + 1..close];
+                    let parts: Vec<String> = inner
+                        .split(',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty()
+                            && s != "Chain-Selector" && s != "Chain-Auto"
+                            && s != "'Chain-Selector'" && s != "'Chain-Auto'"
+                            && s != "\"Chain-Selector\"" && s != "\"Chain-Auto\"")
+                        .collect();
+                    let new_line = format!("{}[{}]{}", &line[..open], parts.join(", "), &line[close + 1..]);
+                    return Some(new_line);
+                }
+            }
+            Some(line.clone())
+        }).collect();
 
-        for (i, line) in entry_lines.iter().enumerate() {
+        // Pass 2: inject Chain-Selector / Chain-Auto at the top of the proxies list.
+        let mut result = Vec::with_capacity(cleaned.len() + 2);
+        for (i, line) in cleaned.iter().enumerate() {
             // Flow style: proxies: [xxx, yyy]
             if line.contains("proxies:") && line.contains('[') {
-                let replaced = line.replacen("proxies: [", "proxies: [Chain-Selector, Chain-Auto, ", 1);
-                result.push(replaced);
-                continue;
+                if let (Some(open), Some(close)) = (line.find('['), line.rfind(']')) {
+                    let inner = line[open + 1..close].trim();
+                    let new_inner = if inner.is_empty() {
+                        "Chain-Selector, Chain-Auto".to_string()
+                    } else {
+                        format!("Chain-Selector, Chain-Auto, {}", inner)
+                    };
+                    let new_line = format!("{}[{}]{}", &line[..open], new_inner, &line[close + 1..]);
+                    result.push(new_line);
+                    continue;
+                }
             }
             // Block style: detect "proxies:" on its own line
             if line.trim() == "proxies:" {
                 result.push(line.clone());
-                proxies_line_seen = true;
 
-                // Detect actual sub-indent from the NEXT line (the first existing proxy entry)
-                let sub_indent = entry_lines[i + 1..]
+                // Detect sub-indent from the next existing list entry
+                let sub_indent = cleaned[i + 1..]
                     .iter()
                     .find(|l| l.trim().starts_with("- "))
                     .map(|l| {
                         let trimmed = l.trim_start();
-                        &l[..l.len() - trimmed.len()]
+                        l[..l.len() - trimmed.len()].to_string()
                     })
                     .unwrap_or_else(|| {
-                        // Fallback: same indent as "proxies:" line
                         let prefix_len = line.find("proxies:").unwrap_or(0);
-                        &line[..prefix_len]
-                    })
-                    .to_string();
+                        line[..prefix_len].to_string()
+                    });
 
                 result.push(format!("{}- Chain-Selector", sub_indent));
                 result.push(format!("{}- Chain-Auto", sub_indent));
@@ -382,14 +427,12 @@ impl ClashConfigMerger {
             }
             result.push(line.clone());
         }
-
-        // If proxies: line was not found at all (shouldn't happen), return as-is
-        let _ = proxies_line_seen;
         result
     }
 
-    /// Get list of proxy names from parsed config (read-only)
-    fn get_proxy_names(&self, config: &serde_yaml::Mapping) -> Result<Vec<String>> {
+    /// Get proxy (name, full Value) pairs from parsed config (read-only).
+    /// Skips Local-Chain-Proxy and any previously-cloned chain nodes.
+    fn get_proxy_entries(&self, config: &serde_yaml::Mapping) -> Result<Vec<(String, Value)>> {
         let proxies = match config.get(&Value::String("proxies".to_string())) {
             Some(p) => p,
             None => return Ok(vec![]),
@@ -397,15 +440,15 @@ impl ClashConfigMerger {
         let proxies_seq = proxies.as_sequence()
             .context("Proxies section must be a sequence")?;
 
-        let mut names = Vec::new();
+        let mut out = Vec::new();
         for proxy in proxies_seq {
             if let Some(name) = proxy.get("name").and_then(|v| v.as_str()) {
                 if name != self.config.proxy_name && !name.ends_with(&self.config.chain_suffix) {
-                    names.push(name.to_string());
+                    out.push((name.to_string(), proxy.clone()));
                 }
             }
         }
-        Ok(names)
+        Ok(out)
     }
 
     /// Detect the main entry group from rules section (read-only)
@@ -483,6 +526,89 @@ impl Default for ClashConfigMerger {
     fn default() -> Self { Self::new() }
 }
 
+/// Build a single-line flow-style YAML mapping for a cloned proxy node,
+/// overriding `name` and appending `dialer-proxy: <socks5>`.
+fn build_cloned_proxy_flow(original: &Value, new_name: &str, dialer_proxy: &str) -> String {
+    let mut ordered = Mapping::new();
+    ordered.insert(Value::String("name".to_string()), Value::String(new_name.to_string()));
+
+    if let Some(orig_map) = original.as_mapping() {
+        for (k, v) in orig_map.iter() {
+            if let Some(ks) = k.as_str() {
+                if ks == "name" || ks == "dialer-proxy" {
+                    continue;
+                }
+            }
+            ordered.insert(k.clone(), v.clone());
+        }
+    }
+
+    ordered.insert(
+        Value::String("dialer-proxy".to_string()),
+        Value::String(dialer_proxy.to_string()),
+    );
+
+    yaml_to_flow_string(&Value::Mapping(ordered))
+}
+
+/// Serialize a YAML Value as a single-line flow-style string.
+/// Handles nested mappings and sequences.
+fn yaml_to_flow_string(v: &Value) -> String {
+    match v {
+        Value::Null => "null".to_string(),
+        Value::Bool(b) => b.to_string(),
+        Value::Number(n) => n.to_string(),
+        Value::String(s) => quote_yaml_scalar(s),
+        Value::Sequence(seq) => {
+            let parts: Vec<String> = seq.iter().map(yaml_to_flow_string).collect();
+            format!("[{}]", parts.join(", "))
+        }
+        Value::Mapping(m) => {
+            let parts: Vec<String> = m.iter().map(|(k, v)| {
+                let key = match k {
+                    Value::String(s) => yaml_key_string(s),
+                    other => yaml_to_flow_string(other),
+                };
+                format!("{}: {}", key, yaml_to_flow_string(v))
+            }).collect();
+            format!("{{ {} }}", parts.join(", "))
+        }
+        Value::Tagged(t) => yaml_to_flow_string(&t.value),
+    }
+}
+
+/// Render a YAML mapping key. Most config keys are simple identifiers, possibly
+/// with hyphens (e.g. `dialer-proxy`, `reality-opts`); quote only if needed.
+fn yaml_key_string(s: &str) -> String {
+    let safe = !s.is_empty()
+        && !s.starts_with(' ')
+        && !s.ends_with(' ')
+        && s.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_' || c == '.');
+    if safe {
+        s.to_string()
+    } else {
+        quote_yaml_scalar(s)
+    }
+}
+
+/// Quote a scalar string for flow-style YAML output if it contains characters
+/// that would break parsing or could be misinterpreted as another type.
+fn quote_yaml_scalar(s: &str) -> String {
+    let needs_quote = s.is_empty()
+        || s.starts_with(' ')
+        || s.ends_with(' ')
+        || s.starts_with(|c: char| matches!(c, '!' | '&' | '*' | '?' | '|' | '>' | '%' | '@' | '`' | '[' | ']' | '{' | '}' | '#' | ',' | '\'' | '"'))
+        || s.contains(|c: char| matches!(c, ':' | ',' | '{' | '}' | '[' | ']' | '#' | '\n' | '\t' | '\'' | '"' | '`'))
+        || matches!(s.to_ascii_lowercase().as_str(),
+            "true" | "false" | "null" | "yes" | "no" | "on" | "off" | "~")
+        || s.parse::<f64>().is_ok();
+    if needs_quote {
+        format!("'{}'", s.replace('\'', "''"))
+    } else {
+        s.to_string()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -548,7 +674,7 @@ rules:
     }
 
     #[test]
-    fn test_merge_creates_chain_relays() {
+    fn test_merge_creates_chain_proxy_clones() {
         let temp_dir = TempDir::new().unwrap();
         let config_path = temp_dir.path().join("config.yaml");
         fs::write(&config_path, create_test_config()).unwrap();
@@ -562,16 +688,36 @@ rules:
 
         let content = fs::read_to_string(&config_path).unwrap();
         let config: Value = serde_yaml::from_str(&content).unwrap();
-        let proxies = config["proxies"].as_sequence().unwrap();
-        assert_eq!(proxies.len(), 3);
 
+        // proxies: 2 originals + 2 clones + 1 Local-Chain-Proxy = 5
+        let proxies = config["proxies"].as_sequence().unwrap();
+        assert_eq!(proxies.len(), 5);
+
+        // Cloned chain nodes must exist in proxies and carry dialer-proxy
+        let proxy_names: Vec<&str> = proxies.iter()
+            .filter_map(|p| p["name"].as_str()).collect();
+        assert!(proxy_names.contains(&"HK-01-Chain"));
+        assert!(proxy_names.contains(&"JP-01-Chain"));
+
+        let chain = proxies.iter()
+            .find(|p| p["name"].as_str() == Some("HK-01-Chain")).unwrap();
+        assert_eq!(chain["dialer-proxy"].as_str(), Some("Local-Chain-Proxy"));
+        assert_eq!(chain["type"].as_str(), Some("ss")); // type preserved from original
+
+        // proxy-groups: only Chain-Selector, Chain-Auto, Proxy, Auto. No relay groups.
         let groups = config["proxy-groups"].as_sequence().unwrap();
         let group_names: Vec<&str> = groups.iter()
             .filter_map(|g| g["name"].as_str()).collect();
-        assert!(group_names.contains(&"HK-01-Chain"));
-        assert!(group_names.contains(&"JP-01-Chain"));
         assert!(group_names.contains(&"Chain-Selector"));
         assert!(group_names.contains(&"Chain-Auto"));
+        // No more relay-type chain groups
+        assert!(!group_names.contains(&"HK-01-Chain"));
+        assert!(!group_names.contains(&"JP-01-Chain"));
+        // No group should be type: relay
+        for g in groups {
+            assert_ne!(g["type"].as_str(), Some("relay"),
+                "relay-type proxy-groups must not be emitted");
+        }
     }
 
     #[test]
@@ -635,7 +781,17 @@ rules:
         // Verify parseable
         let config: Value = serde_yaml::from_str(&output).unwrap();
         let proxies = config["proxies"].as_sequence().unwrap();
-        assert_eq!(proxies.len(), 4); // 3 original + Local-Chain-Proxy
+        // 3 originals + 3 cloned chain nodes + 1 Local-Chain-Proxy
+        assert_eq!(proxies.len(), 7);
+
+        // Each clone must carry dialer-proxy pointing at Local-Chain-Proxy
+        let clones: Vec<&Value> = proxies.iter()
+            .filter(|p| p["name"].as_str().is_some_and(|n| n.ends_with("-Chain")))
+            .collect();
+        assert_eq!(clones.len(), 3);
+        for c in &clones {
+            assert_eq!(c["dialer-proxy"].as_str(), Some("Local-Chain-Proxy"));
+        }
     }
 
     #[test]
@@ -684,17 +840,146 @@ rules:
         let config: Value = serde_yaml::from_str(&final_content).unwrap();
 
         let proxies = config["proxies"].as_sequence().unwrap();
-        assert_eq!(proxies.len(), 2); // Trojan-VPS + Local-Chain-Proxy
+        // Trojan-VPS + Trojan-VPS-Chain (clone) + Local-Chain-Proxy
+        assert_eq!(proxies.len(), 3);
 
         let groups = config["proxy-groups"].as_sequence().unwrap();
         let names: Vec<&str> = groups.iter().filter_map(|g| g["name"].as_str()).collect();
-        assert_eq!(names.len(), 4); // Chain-Selector, Chain-Auto, Proxy, Trojan-VPS-Chain
+        // Chain-Selector, Chain-Auto, Proxy (no more relay groups)
+        assert_eq!(names.len(), 3);
+        assert!(!names.contains(&"Trojan-VPS-Chain")); // no longer a group, now a proxy
 
         // Chain-Selector must NOT contain itself
         let selector = groups.iter().find(|g| g["name"].as_str() == Some("Chain-Selector")).unwrap();
         let sel_proxies: Vec<&str> = selector["proxies"].as_sequence().unwrap()
             .iter().filter_map(|p| p.as_str()).collect();
         assert!(!sel_proxies.contains(&"Chain-Selector"));
+
+        // Proxy group should reference Chain-Selector / Chain-Auto only ONCE each
+        // (idempotent re-apply must not duplicate after dedup pass).
+        let proxy_grp = groups.iter().find(|g| g["name"].as_str() == Some("Proxy")).unwrap();
+        let p_proxies: Vec<&str> = proxy_grp["proxies"].as_sequence().unwrap()
+            .iter().filter_map(|p| p.as_str()).collect();
+        assert_eq!(p_proxies.iter().filter(|n| **n == "Chain-Selector").count(), 1);
+        assert_eq!(p_proxies.iter().filter(|n| **n == "Chain-Auto").count(), 1);
+    }
+
+    #[test]
+    fn test_no_relay_type_anywhere() {
+        // Regression: new Mihomo removed `type: relay`. Output must not contain it.
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().join("config.yaml");
+        fs::write(&config_path, create_flow_style_config()).unwrap();
+
+        let merger = ClashConfigMerger::with_config(MergerConfig {
+            create_backup: false,
+            ..MergerConfig::default()
+        });
+        merger.merge(&config_path).unwrap();
+
+        let output = fs::read_to_string(&config_path).unwrap();
+        assert!(!output.contains("type: relay"),
+            "Output must not contain `type: relay` (removed by Mihomo)");
+
+        // Output must contain dialer-proxy entries for the chain clones
+        assert!(output.contains("dialer-proxy: Local-Chain-Proxy"));
+    }
+
+    #[test]
+    fn test_block_style_inject_dedup_on_reapply() {
+        // Block-style proxies: list must not stack Chain-Selector / Chain-Auto on re-apply.
+        let original = r#"proxies:
+  - name: HK-01
+    type: ss
+    server: example.com
+    port: 443
+    cipher: aes-256-gcm
+    password: secret
+proxy-groups:
+  - name: Proxy
+    type: select
+    proxies:
+      - HK-01
+rules:
+  - MATCH,Proxy
+"#;
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().join("config.yaml");
+        fs::write(&config_path, original).unwrap();
+
+        let merger = ClashConfigMerger::with_config(MergerConfig {
+            create_backup: false,
+            ..MergerConfig::default()
+        });
+
+        for _ in 0..3 {
+            merger.merge(&config_path).unwrap();
+        }
+
+        let final_content = fs::read_to_string(&config_path).unwrap();
+        let config: Value = serde_yaml::from_str(&final_content).unwrap();
+
+        let proxy_grp = config["proxy-groups"].as_sequence().unwrap()
+            .iter().find(|g| g["name"].as_str() == Some("Proxy")).unwrap();
+        let p_list: Vec<&str> = proxy_grp["proxies"].as_sequence().unwrap()
+            .iter().filter_map(|p| p.as_str()).collect();
+        assert_eq!(p_list.iter().filter(|n| **n == "Chain-Selector").count(), 1);
+        assert_eq!(p_list.iter().filter(|n| **n == "Chain-Auto").count(), 1);
+    }
+
+    #[test]
+    fn test_clone_preserves_nested_options() {
+        // reality-opts (nested mapping) and other fields must round-trip into the clone.
+        let original = r#"proxies:
+  - name: HK-01
+    type: vless
+    server: cdn.example.com
+    port: 30394
+    uuid: 4807c050-5b46-4910-a101-73cc059079b9
+    udp: true
+    network: tcp
+    tls: true
+    flow: xtls-rprx-vision
+    servername: www.apple.com
+    client-fingerprint: chrome
+    reality-opts:
+      public-key: VoA8WXthSh6CroV4pHK7V6L5gYUw8MHTo2kIVknTXSE
+      short-id: 693b25e06841ac7f
+proxy-groups:
+  - name: Proxy
+    type: select
+    proxies:
+      - HK-01
+rules:
+  - MATCH,Proxy
+"#;
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().join("config.yaml");
+        fs::write(&config_path, original).unwrap();
+
+        let merger = ClashConfigMerger::with_config(MergerConfig {
+            create_backup: false,
+            ..MergerConfig::default()
+        });
+        merger.merge(&config_path).unwrap();
+
+        let final_content = fs::read_to_string(&config_path).unwrap();
+        let config: Value = serde_yaml::from_str(&final_content).unwrap();
+        let proxies = config["proxies"].as_sequence().unwrap();
+        let clone = proxies.iter()
+            .find(|p| p["name"].as_str() == Some("HK-01-Chain")).unwrap();
+
+        assert_eq!(clone["type"].as_str(), Some("vless"));
+        assert_eq!(clone["server"].as_str(), Some("cdn.example.com"));
+        assert_eq!(clone["port"].as_u64(), Some(30394));
+        assert_eq!(clone["udp"].as_bool(), Some(true));
+        assert_eq!(clone["dialer-proxy"].as_str(), Some("Local-Chain-Proxy"));
+        // Nested mapping preserved
+        let reality = clone["reality-opts"].as_mapping().unwrap();
+        assert_eq!(reality.get("public-key").and_then(|v| v.as_str()),
+            Some("VoA8WXthSh6CroV4pHK7V6L5gYUw8MHTo2kIVknTXSE"));
+        assert_eq!(reality.get("short-id").and_then(|v| v.as_str()),
+            Some("693b25e06841ac7f"));
     }
 
     #[test]
