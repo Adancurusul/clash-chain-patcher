@@ -13,7 +13,7 @@
 //! indentation, quoting, comments).
 
 use anyhow::{Context, Result};
-use serde_yaml::{Mapping, Value};
+use serde_yaml::Value;
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -218,10 +218,14 @@ impl ClashConfigMerger {
             new_proxies_content.extend(entry.lines.clone());
         }
 
-        // Append cloned chain proxy nodes with dialer-proxy
-        for (name, value) in &proxy_entries {
+        // Append chain entries: each is a SOCKS5 outbound (same server as
+        // Local-Chain-Proxy) with `dialer-proxy: <vpn_node>`. This produces the
+        // intended chain order — client → vpn_node → socks5 → target — so the
+        // SOCKS5 server sees the VPN's exit IP (the IP it whitelists), not the
+        // user's home IP. Equivalent to the old `relay: [vpn_node, socks5]`.
+        for (name, _) in &proxy_entries {
             let chain_name = format!("{}{}", name, self.config.chain_suffix);
-            let cloned = build_cloned_proxy_flow(value, &chain_name, &self.config.proxy_name);
+            let cloned = self.format_chain_socks5_clone(&chain_name, name);
             new_proxies_content.push(format!("{}- {}", indent, cloned));
         }
 
@@ -353,6 +357,26 @@ impl ClashConfigMerger {
             if !p.is_empty() { parts.push(format!("password: {}", p)); }
         }
         format!("{}- {{ {} }}", indent, parts.join(", "))
+    }
+
+    /// Format a chain entry as a SOCKS5 outbound (same endpoint as
+    /// Local-Chain-Proxy) with `dialer-proxy: <vpn_node>`. The VPN node name
+    /// may contain spaces / colons / emoji, so it is YAML-quoted.
+    fn format_chain_socks5_clone(&self, chain_name: &str, dialer_proxy: &str) -> String {
+        let mut parts = vec![
+            format!("name: {}", quote_yaml_scalar(chain_name)),
+            "type: socks5".to_string(),
+            format!("server: {}", self.config.proxy_host),
+            format!("port: {}", self.config.proxy_port),
+        ];
+        if let Some(ref u) = self.config.proxy_username {
+            if !u.is_empty() { parts.push(format!("username: {}", u)); }
+        }
+        if let Some(ref p) = self.config.proxy_password {
+            if !p.is_empty() { parts.push(format!("password: {}", p)); }
+        }
+        parts.push(format!("dialer-proxy: {}", quote_yaml_scalar(dialer_proxy)));
+        format!("{{ {} }}", parts.join(", "))
     }
 
     /// Inject Chain-Selector and Chain-Auto into a group's proxies list.
@@ -526,71 +550,6 @@ impl Default for ClashConfigMerger {
     fn default() -> Self { Self::new() }
 }
 
-/// Build a single-line flow-style YAML mapping for a cloned proxy node,
-/// overriding `name` and appending `dialer-proxy: <socks5>`.
-fn build_cloned_proxy_flow(original: &Value, new_name: &str, dialer_proxy: &str) -> String {
-    let mut ordered = Mapping::new();
-    ordered.insert(Value::String("name".to_string()), Value::String(new_name.to_string()));
-
-    if let Some(orig_map) = original.as_mapping() {
-        for (k, v) in orig_map.iter() {
-            if let Some(ks) = k.as_str() {
-                if ks == "name" || ks == "dialer-proxy" {
-                    continue;
-                }
-            }
-            ordered.insert(k.clone(), v.clone());
-        }
-    }
-
-    ordered.insert(
-        Value::String("dialer-proxy".to_string()),
-        Value::String(dialer_proxy.to_string()),
-    );
-
-    yaml_to_flow_string(&Value::Mapping(ordered))
-}
-
-/// Serialize a YAML Value as a single-line flow-style string.
-/// Handles nested mappings and sequences.
-fn yaml_to_flow_string(v: &Value) -> String {
-    match v {
-        Value::Null => "null".to_string(),
-        Value::Bool(b) => b.to_string(),
-        Value::Number(n) => n.to_string(),
-        Value::String(s) => quote_yaml_scalar(s),
-        Value::Sequence(seq) => {
-            let parts: Vec<String> = seq.iter().map(yaml_to_flow_string).collect();
-            format!("[{}]", parts.join(", "))
-        }
-        Value::Mapping(m) => {
-            let parts: Vec<String> = m.iter().map(|(k, v)| {
-                let key = match k {
-                    Value::String(s) => yaml_key_string(s),
-                    other => yaml_to_flow_string(other),
-                };
-                format!("{}: {}", key, yaml_to_flow_string(v))
-            }).collect();
-            format!("{{ {} }}", parts.join(", "))
-        }
-        Value::Tagged(t) => yaml_to_flow_string(&t.value),
-    }
-}
-
-/// Render a YAML mapping key. Most config keys are simple identifiers, possibly
-/// with hyphens (e.g. `dialer-proxy`, `reality-opts`); quote only if needed.
-fn yaml_key_string(s: &str) -> String {
-    let safe = !s.is_empty()
-        && !s.starts_with(' ')
-        && !s.ends_with(' ')
-        && s.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_' || c == '.');
-    if safe {
-        s.to_string()
-    } else {
-        quote_yaml_scalar(s)
-    }
-}
-
 /// Quote a scalar string for flow-style YAML output if it contains characters
 /// that would break parsing or could be misinterpreted as another type.
 fn quote_yaml_scalar(s: &str) -> String {
@@ -693,7 +652,9 @@ rules:
         let proxies = config["proxies"].as_sequence().unwrap();
         assert_eq!(proxies.len(), 5);
 
-        // Cloned chain nodes must exist in proxies and carry dialer-proxy
+        // Cloned chain nodes must exist in proxies. Each clone is a SOCKS5
+        // outbound whose dialer-proxy is the corresponding VPN node — so the
+        // chain order is client -> VPN -> SOCKS5 -> target.
         let proxy_names: Vec<&str> = proxies.iter()
             .filter_map(|p| p["name"].as_str()).collect();
         assert!(proxy_names.contains(&"HK-01-Chain"));
@@ -701,8 +662,11 @@ rules:
 
         let chain = proxies.iter()
             .find(|p| p["name"].as_str() == Some("HK-01-Chain")).unwrap();
-        assert_eq!(chain["dialer-proxy"].as_str(), Some("Local-Chain-Proxy"));
-        assert_eq!(chain["type"].as_str(), Some("ss")); // type preserved from original
+        assert_eq!(chain["type"].as_str(), Some("socks5"));
+        assert_eq!(chain["dialer-proxy"].as_str(), Some("HK-01"));
+        let jp = proxies.iter()
+            .find(|p| p["name"].as_str() == Some("JP-01-Chain")).unwrap();
+        assert_eq!(jp["dialer-proxy"].as_str(), Some("JP-01"));
 
         // proxy-groups: only Chain-Selector, Chain-Auto, Proxy, Auto. No relay groups.
         let groups = config["proxy-groups"].as_sequence().unwrap();
@@ -784,13 +748,17 @@ rules:
         // 3 originals + 3 cloned chain nodes + 1 Local-Chain-Proxy
         assert_eq!(proxies.len(), 7);
 
-        // Each clone must carry dialer-proxy pointing at Local-Chain-Proxy
+        // Each clone must be a SOCKS5 outbound with dialer-proxy = its VPN node
         let clones: Vec<&Value> = proxies.iter()
-            .filter(|p| p["name"].as_str().is_some_and(|n| n.ends_with("-Chain")))
+            .filter(|p| p["name"].as_str().is_some_and(|n|
+                n.ends_with("-Chain") && n != "Local-Chain-Proxy"))
             .collect();
         assert_eq!(clones.len(), 3);
         for c in &clones {
-            assert_eq!(c["dialer-proxy"].as_str(), Some("Local-Chain-Proxy"));
+            assert_eq!(c["type"].as_str(), Some("socks5"));
+            let cname = c["name"].as_str().unwrap();
+            let vpn_name = cname.trim_end_matches("-Chain");
+            assert_eq!(c["dialer-proxy"].as_str(), Some(vpn_name));
         }
     }
 
@@ -881,8 +849,11 @@ rules:
         assert!(!output.contains("type: relay"),
             "Output must not contain `type: relay` (removed by Mihomo)");
 
-        // Output must contain dialer-proxy entries for the chain clones
-        assert!(output.contains("dialer-proxy: Local-Chain-Proxy"));
+        // Output must contain dialer-proxy entries for the chain clones,
+        // each pointing at a VPN node (not at Local-Chain-Proxy).
+        assert!(output.contains("dialer-proxy:"));
+        assert!(!output.contains("dialer-proxy: Local-Chain-Proxy"),
+            "dialer-proxy must point at a VPN node, not at the SOCKS5 hop");
     }
 
     #[test]
@@ -928,8 +899,11 @@ rules:
     }
 
     #[test]
-    fn test_clone_preserves_nested_options() {
-        // reality-opts (nested mapping) and other fields must round-trip into the clone.
+    fn test_chain_clone_is_socks5_with_correct_dialer() {
+        // Chain order must be client -> VPN -> SOCKS5 -> target.
+        // The cloned outbound is SOCKS5 (the second hop) and its dialer-proxy
+        // is the VPN node (the first hop). The original VPN node is preserved
+        // unchanged in proxies.
         let original = r#"proxies:
   - name: HK-01
     type: vless
@@ -939,9 +913,6 @@ rules:
     udp: true
     network: tcp
     tls: true
-    flow: xtls-rprx-vision
-    servername: www.apple.com
-    client-fingerprint: chrome
     reality-opts:
       public-key: VoA8WXthSh6CroV4pHK7V6L5gYUw8MHTo2kIVknTXSE
       short-id: 693b25e06841ac7f
@@ -958,6 +929,10 @@ rules:
         fs::write(&config_path, original).unwrap();
 
         let merger = ClashConfigMerger::with_config(MergerConfig {
+            proxy_host: "1.2.3.4".to_string(),
+            proxy_port: 1080,
+            proxy_username: Some("u".to_string()),
+            proxy_password: Some("p".to_string()),
             create_backup: false,
             ..MergerConfig::default()
         });
@@ -966,20 +941,28 @@ rules:
         let final_content = fs::read_to_string(&config_path).unwrap();
         let config: Value = serde_yaml::from_str(&final_content).unwrap();
         let proxies = config["proxies"].as_sequence().unwrap();
+
+        // The chain clone is a SOCKS5 with dialer-proxy: HK-01
         let clone = proxies.iter()
             .find(|p| p["name"].as_str() == Some("HK-01-Chain")).unwrap();
+        assert_eq!(clone["type"].as_str(), Some("socks5"));
+        assert_eq!(clone["server"].as_str(), Some("1.2.3.4"));
+        assert_eq!(clone["port"].as_u64(), Some(1080));
+        assert_eq!(clone["username"].as_str(), Some("u"));
+        assert_eq!(clone["password"].as_str(), Some("p"));
+        assert_eq!(clone["dialer-proxy"].as_str(), Some("HK-01"));
 
-        assert_eq!(clone["type"].as_str(), Some("vless"));
-        assert_eq!(clone["server"].as_str(), Some("cdn.example.com"));
-        assert_eq!(clone["port"].as_u64(), Some(30394));
-        assert_eq!(clone["udp"].as_bool(), Some(true));
-        assert_eq!(clone["dialer-proxy"].as_str(), Some("Local-Chain-Proxy"));
-        // Nested mapping preserved
-        let reality = clone["reality-opts"].as_mapping().unwrap();
+        // The original VPN node must be preserved untouched (still vless,
+        // with reality-opts intact)
+        let orig = proxies.iter()
+            .find(|p| p["name"].as_str() == Some("HK-01")).unwrap();
+        assert_eq!(orig["type"].as_str(), Some("vless"));
+        assert_eq!(orig["server"].as_str(), Some("cdn.example.com"));
+        let reality = orig["reality-opts"].as_mapping().unwrap();
         assert_eq!(reality.get("public-key").and_then(|v| v.as_str()),
             Some("VoA8WXthSh6CroV4pHK7V6L5gYUw8MHTo2kIVknTXSE"));
-        assert_eq!(reality.get("short-id").and_then(|v| v.as_str()),
-            Some("693b25e06841ac7f"));
+        assert!(orig.get("dialer-proxy").is_none(),
+            "original VPN node must not get a dialer-proxy");
     }
 
     #[test]
